@@ -1,5 +1,9 @@
 [package]
-name = "valley-free-rs"
+name = "valley-free"
+description = "Valley-free AS path exploration library for Rust"
+keywords = ["bgp", "valley-free", "network", "simulation"]
+repository = "https://github.com/digizeph/valley-free"
+documentation = "https://docs.rs/valley-free"
 version = "0.1.0"
 authors = ["Mingwei Zhang <mingwei@mwzhang.com>"]
 edition = "2018"
