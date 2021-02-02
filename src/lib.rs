@@ -167,7 +167,7 @@ impl Topology {
     /// Full example: to explore all paths toward AS123, call
     /// ```no_run
     /// use std::{fs::File, io::BufReader, collections::HashSet};
-    /// use valley_free_rs::*;
+    /// use valley_free::*;
     /// use bzip2::read::BzDecoder;
     ///
     /// let mut topo = Topology::new();
