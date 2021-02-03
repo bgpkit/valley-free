@@ -27,6 +27,7 @@ pub enum Direction {
 type Path = Vec<u32>;
 
 /// Definiton of AS struct
+#[derive(Clone)]
 pub struct As {
     /// Autonomous system number
     pub asn: u32,
