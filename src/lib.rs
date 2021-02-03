@@ -5,6 +5,11 @@ use std::{
     collections::{HashMap, HashSet},
     io::BufRead,
 };
+use std::{fs::File, io::BufReader};
+
+use bzip2::read::BzDecoder;
+use pyo3::prelude::*;
+use pyo3::{exceptions::PyIOError, wrap_pyfunction};
 
 /// AS relationship types: CUSTOMER, PROVIDER, and PEER
 pub enum RelType {
@@ -24,21 +29,26 @@ pub enum Direction {
 }
 
 /// Define type alias Path as Vec<u32>
-type Path = Vec<u32>;
+pub type Path = Vec<u32>;
 
 /// Definiton of AS struct
+#[pyclass]
 #[derive(Clone)]
 pub struct As {
     /// Autonomous system number
+    #[pyo3(get, set)]
     pub asn: u32,
 
     /// Set of customer ASes
+    #[pyo3(get, set)]
     pub customers: HashSet<u32>,
 
     /// Set of provider ASes
+    #[pyo3(get, set)]
     pub providers: HashSet<u32>,
 
     /// Set of peer ASes
+    #[pyo3(get, set)]
     pub peers: HashSet<u32>,
 }
 
@@ -60,8 +70,11 @@ impl As {
 }
 
 /// Definition of Topology
+#[pyclass]
+#[derive(FromPyObject)]
 pub struct Topology {
     /// Hashmap of ASes: ASN (u32) to [As]
+    #[pyo3(get)]
     pub ases_map: HashMap<u32, As>,
 }
 
@@ -267,6 +280,40 @@ impl Topology {
             }
         }
     }
+}
+
+/// Formats the sum of two numbers as string.
+#[pyfunction]
+fn load_topology<'a>(py: Python, file_path: String) -> PyResult<&PyCell<Topology>> {
+    let mut topo = Topology::new();
+    let file = match File::open(&file_path) {
+        Ok(f) => f,
+        Err(_) => panic!("cannot open file"),
+    };
+    let reader = BufReader::new(BzDecoder::new(&file));
+    match topo.build_topology(reader) {
+        Ok(_) => {
+            let topo_cell = PyCell::new(py, topo).unwrap();
+            Ok(topo_cell)
+        }
+        Err(_) => Err(PyIOError::new_err("cannot load topology file")),
+    }
+}
+
+#[pyfunction]
+fn propagate_paths<'a>(topo: &Topology, asn: u32) -> PyResult<Vec<Vec<u32>>> {
+    let mut all_paths = vec![];
+    let mut seen = HashSet::new();
+    topo.propagate_paths(&mut all_paths, asn, Direction::UP, vec![], &mut seen);
+    Ok(all_paths)
+}
+
+/// A Python module implemented in Rust.
+#[pymodule]
+fn valley_free(_: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(load_topology, m)?)?;
+    m.add_function(wrap_pyfunction!(propagate_paths, m)?)?;
+    Ok(())
 }
 
 #[cfg(test)]

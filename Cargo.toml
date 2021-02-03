@@ -4,12 +4,20 @@ description = "Valley-free AS path exploration library for Rust"
 keywords = ["bgp", "valley-free", "network", "simulation"]
 repository = "https://github.com/digizeph/valley-free"
 documentation = "https://docs.rs/valley-free"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Mingwei Zhang <mingwei@mwzhang.com>"]
 edition = "2018"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dev-dependencies]
+[lib]
+name = "valley_free"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies.pyo3]
+version = "0.13.1"
+features = ["extension-module"]
+
+[dependencies]
 bzip2="0.4"
