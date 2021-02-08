@@ -15,9 +15,10 @@ license = "MIT"
 name = "valley_free"
 crate-type = ["cdylib", "rlib"]
 
-[dependencies.pyo3]
-version = "0.13.1"
-features = ["extension-module"]
-
 [dependencies]
+pyo3 = "0.13.1"
 bzip2="0.4"
+
+[features]
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]
