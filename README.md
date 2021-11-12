@@ -1,4 +1,4 @@
-# Valley Free Explore
+# Valley Free Explorer
 
 `valley-free` crate is a Rust package that reads CAIDA's [AS-relationship data][asrel]
 and explores AS-level paths using `valley-free` model.
