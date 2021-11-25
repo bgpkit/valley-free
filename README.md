@@ -39,6 +39,9 @@ fn main(){
 
 ### Python
 
+The package is available on PyPi at https://pypi.org/project/valley-free/. For installation, `pip3 install valley-free`
+should do the trick.
+
 ``` python
 #!/usr/bin/env python3
 
