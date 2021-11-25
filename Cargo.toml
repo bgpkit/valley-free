@@ -17,7 +17,7 @@ name = "valley_free"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = "0.13.1"
+pyo3 = "0.15.1"
 bzip2="0.4"
 
 [features]
