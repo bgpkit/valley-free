@@ -217,19 +217,19 @@ impl Topology {
             return;
         }
 
-        if seen.contains(&asn) {
-            // in current dps search, we've already gone through this AS from other paths
-            // for example:
-            // 1,2 -> 1,2,3 -> 1,4
-            // 1,4,2 will be triggered here
-            // NOTE: this might produce some false negative
-            return;
-        }
-
         // reaching here means the path + current as should be good to use
         let mut new_path = path.clone();
         new_path.push(asn);
         all_paths.push(new_path.clone());
+
+        if seen.contains(&asn) {
+            // we have seen this AS from other branches, meaning we have tried propagation from
+            // this AS already. so we skip propagation here.
+            // NOTE: we still add this path to the paths list. see `test_multiple_paths_to_origin`
+            //       test function for more.
+            return;
+        }
+
         seen.insert(asn);
 
         let as_ptr = self.ases_map.get(&asn).unwrap();
@@ -353,5 +353,30 @@ mod tests {
         let mut seen = HashSet::new();
         topo.propagate_paths(&mut all_paths, 15169, Direction::UP, vec![], &mut seen);
         dbg!(all_paths.len());
+    }
+
+    #[test]
+    fn test_multiple_paths_to_origin() {
+        let mut topo = Topology::new();
+        let test_rel = r#"# xxx
+1|2|-1
+1|3|-1
+2|4|-1
+3|4|-1"#;
+        let reader = BufReader::new(test_rel.as_bytes());
+        let res = topo.build_topology(reader);
+        assert!(res.is_ok());
+        assert_eq!(topo.ases_map.len(), 4);
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
+
+        assert_eq!(all_paths.len(), 5);
+        assert!(all_paths.contains(&vec![1]));
+        assert!(all_paths.contains(&vec![1,2]));
+        assert!(all_paths.contains(&vec![1,2,4]));
+        assert!(all_paths.contains(&vec![1,3]));
+        assert!(all_paths.contains(&vec![1,3,4]));
     }
 }
