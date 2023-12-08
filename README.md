@@ -107,7 +107,7 @@ topo = valley_free.load_topology("20161101.as-rel.txt.bz2")
 paths = valley_free.propagate_paths(topo, 15169)
 
 print(len(paths))
-# 55483
+# 110243
 ```
 
 #### Manually build Python package 
