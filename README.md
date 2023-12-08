@@ -71,7 +71,7 @@ valley_free="0.2"
 ```
 
 ``` rust
-use std::{fs::File, io::BufReader};
+use std::{fs::File, io::BufReader, collections::HashSet};
 use valley_free::*;
 use bzip2::read::BzDecoder;
 
