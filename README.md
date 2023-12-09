@@ -113,7 +113,7 @@ print(len(paths))
 #### Manually build Python package 
 
 Build for current Python environment:
-`maturin build --release`
+`maturin build --release --features py`
 
 Build using manylinux environment:
-`docker run --rm -v $(pwd):/io konstin2/maturin build`
+`docker run --rm -v $(pwd):/io konstin2/maturin build --release --features py`
