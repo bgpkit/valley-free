@@ -2,7 +2,7 @@
 /// AS-relationship data file and run path exploration using valley-free routing
 /// principle.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::BufRead,
 };
 use std::{fs::File, io::BufReader};
@@ -19,6 +19,7 @@ pub enum RelType {
 }
 
 /// Direction of where the current current propagation going.
+#[derive(PartialEq, Eq)]
 pub enum Direction {
     /// Propagating to a provider AS
     UP,
@@ -212,71 +213,115 @@ impl Topology {
         path: Path,
         seen: &mut HashSet<u32>,
     ) {
-        if path.contains(&asn) {
-            // detected a loop
-            return;
+        let mut up_path_queue = VecDeque::<Path>::new();
+        let mut peer_path_queue = VecDeque::<Path>::new();
+        let mut down_path_queue = VecDeque::<Path>::new();
+
+        let path_join = |x: &Path, y: u32| -> Path {
+            let mut new_path = x.clone();
+            new_path.push(y);
+            new_path
+        };
+
+        // Initialize the path queues depending on the first propagation direction
+        let new_path = path_join(&path, asn);
+        match dir {
+            Direction::UP => up_path_queue.push_back(new_path.clone()),
+            Direction::PEER => peer_path_queue.push_back(new_path.clone()),
+            Direction::DOWN => down_path_queue.push_back(new_path.clone()),
         }
+        all_paths.push(new_path);
 
-        // reaching here means the path + current as should be good to use
-        let mut new_path = path.clone();
-        new_path.push(asn);
-        all_paths.push(new_path.clone());
+        while !up_path_queue.is_empty() {
+            let path = up_path_queue.pop_front().unwrap(); // While check if has elements
+            let asn = path.last().unwrap(); // Always has at least one element
 
-        if seen.contains(&asn) {
             // we have seen this AS from other branches, meaning we have tried propagation from
             // this AS already. so we skip propagation here.
             // NOTE: we still add this path to the paths list. see `test_multiple_paths_to_origin`
             //       test function for more.
-            return;
+            if seen.contains(asn) {
+                continue;
+            }
+            seen.insert(*asn);
+
+            let as_ptr = self.ases_map.get(asn).unwrap();
+
+            for provider_asn in &as_ptr.providers {
+                if path.contains(provider_asn) {
+                    continue;
+                }
+
+                let new_path = path_join(&path, *provider_asn);
+                all_paths.push(new_path.clone());
+                up_path_queue.push_back(new_path);
+            }
+
+            for pear_asn in &as_ptr.peers {
+                if path.contains(pear_asn) {
+                    continue;
+                }
+
+                let new_path = path_join(&path, *pear_asn);
+                all_paths.push(new_path.clone());
+                peer_path_queue.push_back(new_path);
+            }
+
+            for customer_asn in &as_ptr.customers {
+                // detected a loop
+                if path.contains(customer_asn) {
+                    continue;
+                }
+
+                let new_path = path_join(&path, *customer_asn);
+                all_paths.push(new_path.clone());
+                down_path_queue.push_back(new_path);
+            }
         }
 
-        seen.insert(asn);
+        while !peer_path_queue.is_empty() {
+            let path = peer_path_queue.pop_front().unwrap();
+            let asn = path.last().unwrap();
 
-        let as_ptr = self.ases_map.get(&asn).unwrap();
-        match dir {
-            Direction::UP => {
-                // we are propagating up in the current step, thus we can
-                // continue to all directions
-                for customer_asn in &as_ptr.customers {
-                    self.propagate_paths(
-                        all_paths,
-                        *customer_asn,
-                        Direction::DOWN,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
-
-                for peer_asn in &as_ptr.peers {
-                    self.propagate_paths(
-                        all_paths,
-                        *peer_asn,
-                        Direction::PEER,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
-
-                for provider_asn in &as_ptr.providers {
-                    self.propagate_paths(
-                        all_paths,
-                        *provider_asn,
-                        Direction::UP,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
+            if seen.contains(asn) {
+                continue;
             }
-            Direction::DOWN | Direction::PEER => {
-                for customer_asn in &as_ptr.customers {
-                    self.propagate_paths(
-                        all_paths,
-                        *customer_asn,
-                        Direction::DOWN,
-                        new_path.clone(),
-                        seen,
-                    );
+            seen.insert(*asn);
+
+            let as_ptr = self.ases_map.get(asn).unwrap();
+
+            for customer_asn in &as_ptr.customers {
+                // detected a loop
+                if path.contains(customer_asn) {
+                    continue;
                 }
+
+                let new_path = path_join(&path, *customer_asn);
+                all_paths.push(new_path.clone());
+                down_path_queue.push_back(new_path);
+            }
+        }
+
+        while !down_path_queue.is_empty() {
+            let path = down_path_queue.pop_front().unwrap();
+            let asn = path.last().unwrap();
+
+            if seen.contains(asn) {
+                continue;
+            }
+            seen.insert(*asn);
+
+            let as_ptr = self.ases_map.get(asn).unwrap();
+
+            for customer_asn in &as_ptr.customers {
+                // detected a loop
+                if path.contains(customer_asn) {
+                    continue;
+                }
+
+                let new_path = path_join(&path, *customer_asn);
+                all_paths.push(new_path.clone());
+                down_path_queue.push_back(new_path);
             }
         }
     }
@@ -337,41 +382,153 @@ mod tests {
         assert_eq!(topo.ases_map.len(), 55809);
     }
 
-    #[test]
-    fn propagate() {
+    fn topology_from_str(test_rel: &str) -> Topology {
         let mut topo = Topology::new();
-        let file = match File::open("20161101.as-rel.txt.bz2") {
-            Ok(f) => f,
-            Err(_) => panic!("cannot open file"),
-        };
-        let reader = BufReader::new(BzDecoder::new(&file));
-        let res = topo.build_topology(reader);
-        assert!(res.is_ok());
-        assert_eq!(topo.ases_map.len(), 55809);
-
-        let mut all_paths = vec![];
-        let mut seen = HashSet::new();
-        topo.propagate_paths(&mut all_paths, 15169, Direction::UP, vec![], &mut seen);
-        dbg!(all_paths.len());
-    }
-
-    #[test]
-    fn test_multiple_paths_to_origin() {
-        let mut topo = Topology::new();
-        let test_rel = r#"# xxx
-1|2|-1
-1|3|-1
-2|4|-1
-3|4|-1"#;
         let reader = BufReader::new(test_rel.as_bytes());
         let res = topo.build_topology(reader);
         assert!(res.is_ok());
-        assert_eq!(topo.ases_map.len(), 4);
+        topo
+    }
+
+    #[test]
+    /*
+     * ┌───────┐
+     * │   1   │
+     * └───┬───┘
+     *     │
+     *     ▼
+     * ┌───────┐
+     * │   2   │
+     * └───┬───┘
+     *     │
+     *     ▼
+     * ┌───────┐
+     * │   3   │
+     * └───────┘
+     */
+    fn propagate_down_topology() {
+        let topo = topology_from_str("1|2|-1\n2|3|-1");
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::DOWN, vec![], &mut seen);
+
+        assert_eq!(all_paths.len(), 3);
+        assert!(all_paths.contains(&vec![1]));
+        assert!(all_paths.contains(&vec![1, 2]));
+        assert!(all_paths.contains(&vec![1, 2, 3]));
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::PEER, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 3);
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 3);
+    }
+
+    #[test]
+    /*
+     * ┌───────┐    ┌───────┐
+     * │   1   │◄──►│   2   │
+     * └───────┘    └───┬───┘
+     *                  │
+     *                  ▼
+     *              ┌───────┐
+     *              │   3   │
+     *              └───────┘
+     */
+    fn propagate_peer_topology() {
+        let topo = topology_from_str("1|2|0\n2|3|-1");
 
         let mut all_paths = vec![];
         let mut seen = HashSet::new();
         topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
 
+        assert_eq!(all_paths.len(), 3);
+        assert!(all_paths.contains(&vec![1]));
+        assert!(all_paths.contains(&vec![1, 2]));
+        assert!(all_paths.contains(&vec![1, 2, 3]));
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::PEER, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 1);
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::DOWN, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 1);
+    }
+
+    #[test]
+    /*
+     * ┌───────┐    ┌───────┐
+     * │   2   │◄──►│   3   │
+     * └───┬───┘    └───┬───┘
+     *     │            │
+     *     ▼            ▼
+     * ┌───────┐    ┌───────┐
+     * │   1   │    │   4   │
+     * └───────┘    └───────┘
+     */
+    fn propagate_up_topology() {
+        let topo = topology_from_str("2|1|-1\n2|3|0\n3|4|-1");
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
+
+        assert_eq!(all_paths.len(), 4);
+        assert!(all_paths.contains(&vec![1]));
+        assert!(all_paths.contains(&vec![1, 2]));
+        assert!(all_paths.contains(&vec![1, 2, 3]));
+        assert!(all_paths.contains(&vec![1, 2, 3, 4]));
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::PEER, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 1);
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::DOWN, vec![], &mut seen);
+        assert_eq!(all_paths.len(), 1);
+    }
+
+    #[test]
+    /*
+     *       ┌───────┐
+     *       │   1   │
+     *       └───┬───┘
+     *           │
+     *     ┌─────┴─────┐
+     *     │           │
+     * ┌───▼───┐   ┌───▼───┐
+     * │   2   │   │   3   │
+     * └───┬───┘   └───┬───┘
+     *     │           │
+     *     └─────┬─────┘
+     *           │
+     *       ┌───▼───┐
+     *       │   4   │
+     *       └───────┘
+     */
+    fn test_multiple_paths_to_origin() {
+        let test_rel = r#"# xxx
+1|2|-1
+1|3|-1
+2|4|-1
+3|4|-1"#;
+        let topo = topology_from_str(test_rel);
+
+        let mut all_paths = vec![];
+        let mut seen = HashSet::new();
+        topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
+
+        dbg!(&all_paths);
         assert_eq!(all_paths.len(), 5);
         assert!(all_paths.contains(&vec![1]));
         assert!(all_paths.contains(&vec![1, 2]));
