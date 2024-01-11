@@ -374,9 +374,61 @@ mod tests {
 
         assert_eq!(all_paths.len(), 5);
         assert!(all_paths.contains(&vec![1]));
-        assert!(all_paths.contains(&vec![1,2]));
-        assert!(all_paths.contains(&vec![1,2,4]));
-        assert!(all_paths.contains(&vec![1,3]));
-        assert!(all_paths.contains(&vec![1,3,4]));
+        assert!(all_paths.contains(&vec![1, 2]));
+        assert!(all_paths.contains(&vec![1, 2, 4]));
+        assert!(all_paths.contains(&vec![1, 3]));
+        assert!(all_paths.contains(&vec![1, 3, 4]));
+    }
+
+    // Issue #4
+    #[test]
+    fn test_works_in_any_provider_order() {
+        let test_rel = r#"# xxx
+3356|6453|0
+3356|3|0
+3356|4|-1
+6453|4|-1"#;
+
+        let get_providers = |topo: &Topology| -> Vec<u32> {
+            topo.ases_map
+                .get(&4)
+                .unwrap()
+                .providers
+                .clone()
+                .into_iter()
+                .collect()
+        };
+
+        let mut topo1 = Topology::new();
+
+        let reader = BufReader::new(test_rel.as_bytes());
+        topo1.build_topology(reader).unwrap();
+
+        let providers1 = get_providers(&topo1);
+
+        let topo2 = loop {
+            let mut topo2 = Topology::new();
+            let reader = BufReader::new(test_rel.as_bytes());
+            topo2.build_topology(reader).unwrap();
+
+            let providers2 = get_providers(&topo2);
+
+            if providers1 != providers2 {
+                break topo2;
+            }
+        };
+
+        let mut all_paths1 = vec![];
+        let mut seen1 = HashSet::new();
+        topo1.propagate_paths(&mut all_paths1, 4, Direction::UP, vec![], &mut seen1);
+
+        let mut all_paths2 = vec![];
+        let mut seen2 = HashSet::new();
+        topo2.propagate_paths(&mut all_paths2, 4, Direction::UP, vec![], &mut seen2);
+
+        assert_eq!(all_paths1.len(), all_paths2.len());
+        assert_eq!(seen1, seen2);
+        assert!(seen1.contains(&3));
+        assert!(seen2.contains(&3));
     }
 }
