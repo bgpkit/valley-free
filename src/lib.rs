@@ -368,26 +368,22 @@ mod tests {
     use crate::*;
     use bzip2::read::BzDecoder;
 
+    fn topology_from_str(test_rel: &str) -> Topology {
+        let mut topo = Topology::new();
+        let reader = BufReader::new(test_rel.as_bytes());
+        topo.build_topology(reader).unwrap();
+        topo
+    }
+
     #[test]
     fn build_topology() {
         let mut topo = Topology::new();
-        let file = match File::open("20161101.as-rel.txt.bz2") {
-            Ok(f) => f,
-            Err(_) => panic!("cannot open file"),
-        };
+        let file = File::open("20161101.as-rel.txt.bz2").unwrap();
         let reader = BufReader::new(BzDecoder::new(&file));
         let res = topo.build_topology(reader);
 
         assert!(res.is_ok());
         assert_eq!(topo.ases_map.len(), 55809);
-    }
-
-    fn topology_from_str(test_rel: &str) -> Topology {
-        let mut topo = Topology::new();
-        let reader = BufReader::new(test_rel.as_bytes());
-        let res = topo.build_topology(reader);
-        assert!(res.is_ok());
-        topo
     }
 
     #[test]
@@ -537,7 +533,18 @@ mod tests {
         assert!(all_paths.contains(&vec![1, 3, 4]));
     }
 
-    // Issue #4
+    /*
+     * Issue #4 test case
+     * ┌────────┐     ┌────────┐       ┌───────┐
+     * │  3356  ├─────┤  6453  │◄─────►│   3   │
+     * └───┬────┘     └────┬───┘       └───────┘
+     *     │               │
+     *     └───────┬───────┘
+     *             │
+     *         ┌───▼───┐
+     *         │   4   │
+     *         └───────┘
+     */
     #[test]
     fn test_works_in_any_provider_order() {
         let test_rel = r#"# xxx
@@ -556,17 +563,12 @@ mod tests {
                 .collect()
         };
 
-        let mut topo1 = Topology::new();
-
-        let reader = BufReader::new(test_rel.as_bytes());
-        topo1.build_topology(reader).unwrap();
+        let topo1 = topology_from_str(test_rel);
 
         let providers1 = get_providers(&topo1);
 
         let topo2 = loop {
-            let mut topo2 = Topology::new();
-            let reader = BufReader::new(test_rel.as_bytes());
-            topo2.build_topology(reader).unwrap();
+            let topo2 = topology_from_str(test_rel);
 
             let providers2 = get_providers(&topo2);
 
