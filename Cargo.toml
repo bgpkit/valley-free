@@ -19,6 +19,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = "0.15.1"
 bzip2="0.4"
+petgraph = "0.6.4"
 
 [features]
 py = ["pyo3/extension-module"]
