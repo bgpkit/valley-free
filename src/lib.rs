@@ -32,7 +32,6 @@ pub enum Direction {
 }
 
 pub type TopologyPath = Vec<u32>;
-type TopologyPathIndex = Vec<NodeIndex>;
 
 pub struct Topology(DiGraph<u32, RelType>);
 
@@ -104,31 +103,50 @@ impl Topology {
         Ok(Topology::from_edges(edges))
     }
 
-    pub fn providers_of(&self, asn: NodeIndex) -> HashSet<NodeIndex> {
+    pub fn add_relation(&mut self, asn1: u32, asn2: u32, rel: RelType) {
+        match rel {
+            RelType::ProviderToCustomer => {
+                self.0
+                    .add_edge(asn1.into(), asn2.into(), RelType::ProviderToCustomer);
+            }
+            RelType::PearToPear => {
+                self.0
+                    .add_edge(asn1.into(), asn2.into(), RelType::PearToPear);
+                self.0
+                    .add_edge(asn2.into(), asn1.into(), RelType::PearToPear);
+            }
+        }
+    }
+
+    pub fn remove_as(&mut self, asn: u32) {
+        self.0.remove_node(asn.into());
+    }
+
+    pub fn providers_of(&self, asn: u32) -> HashSet<u32> {
         self.0
-            .edges_directed(asn, petgraph::Direction::Incoming)
+            .edges_directed(asn.into(), petgraph::Direction::Incoming)
             .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
-            .map(|edge| edge.source())
+            .map(|edge| self.asn_of(edge.source()))
             .collect()
     }
 
-    pub fn customers_of(&self, asn: NodeIndex) -> HashSet<NodeIndex> {
+    pub fn customers_of(&self, asn: u32) -> HashSet<u32> {
         self.0
-            .edges_directed(asn, petgraph::Direction::Outgoing)
+            .edges_directed(asn.into(), petgraph::Direction::Outgoing)
             .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
-            .map(|edge| edge.target())
+            .map(|edge| self.asn_of(edge.target()))
             .collect()
     }
 
-    pub fn peers_of(&self, asn: NodeIndex) -> HashSet<NodeIndex> {
+    pub fn peers_of(&self, asn: u32) -> HashSet<u32> {
         self.0
-            .edges_directed(asn, petgraph::Direction::Outgoing)
+            .edges_directed(asn.into(), petgraph::Direction::Outgoing)
             .filter(|edge| edge.weight() == &RelType::PearToPear)
-            .map(|edge| edge.target())
+            .map(|edge| self.asn_of(edge.target()))
             .collect()
     }
 
-    pub fn asn_of(&self, asn: NodeIndex) -> u32 {
+    fn asn_of(&self, asn: NodeIndex) -> u32 {
         asn.index().try_into().unwrap()
     }
 
@@ -168,17 +186,17 @@ impl Topology {
         from_asn: u32,
         dir: Direction,
     ) -> (Vec<TopologyPath>, HashSet<u32>) {
-        let path: TopologyPathIndex = vec![];
-        let mut all_paths: Vec<TopologyPathIndex> = vec![];
+        let path: TopologyPath = vec![];
+        let mut all_paths: Vec<TopologyPath> = vec![];
         let mut seen = HashSet::new();
 
-        let mut up_path_queue = VecDeque::<TopologyPathIndex>::new();
-        let mut peer_path_queue = VecDeque::<TopologyPathIndex>::new();
-        let mut down_path_queue = VecDeque::<TopologyPathIndex>::new();
+        let mut up_path_queue = VecDeque::<TopologyPath>::new();
+        let mut peer_path_queue = VecDeque::<TopologyPath>::new();
+        let mut down_path_queue = VecDeque::<TopologyPath>::new();
 
-        let path_join = |x: &Vec<NodeIndex>, y: NodeIndex| -> TopologyPathIndex {
+        let path_join = |x: &Vec<u32>, y: u32| -> TopologyPath {
             let mut new_path = x.clone();
-            new_path.push(y.into());
+            new_path.push(y);
             new_path
         };
 
@@ -278,13 +296,6 @@ impl Topology {
             }
         }
 
-        let all_paths: Vec<TopologyPath> = all_paths
-            .into_iter()
-            .map(|path| path.into_iter().map(|x| self.asn_of(x)).collect())
-            .collect();
-
-        let seen: HashSet<u32> = seen.into_iter().map(|x| self.asn_of(x)).collect();
-
         (all_paths, seen)
     }
 }
@@ -324,30 +335,30 @@ mod test {
     fn test_providers() {
         let topo = diamond_topology();
 
-        assert_eq!(topo.providers_of(1.into()), [].into());
-        assert_eq!(topo.providers_of(2.into()), [1.into()].into());
-        assert_eq!(topo.providers_of(3.into()), [1.into()].into());
-        assert_eq!(topo.providers_of(4.into()), [2.into(), 3.into()].into());
+        assert_eq!(topo.providers_of(1), [].into());
+        assert_eq!(topo.providers_of(2), [1].into());
+        assert_eq!(topo.providers_of(3), [1].into());
+        assert_eq!(topo.providers_of(4), [2, 3].into());
     }
 
     #[test]
     fn test_customers() {
         let topo = diamond_topology();
 
-        assert_eq!(topo.customers_of(1.into()), [3.into(), 2.into()].into());
-        assert_eq!(topo.customers_of(2.into()), [4.into()].into());
-        assert_eq!(topo.customers_of(3.into()), [4.into()].into());
-        assert_eq!(topo.customers_of(4.into()), [].into());
+        assert_eq!(topo.customers_of(1), [3, 2].into());
+        assert_eq!(topo.customers_of(2), [4].into());
+        assert_eq!(topo.customers_of(3), [4].into());
+        assert_eq!(topo.customers_of(4), [].into());
     }
 
     #[test]
     fn test_peers() {
         let topo = diamond_topology();
 
-        assert_eq!(topo.peers_of(1.into()), [].into());
-        assert_eq!(topo.peers_of(2.into()), [3.into()].into());
-        assert_eq!(topo.peers_of(3.into()), [2.into()].into());
-        assert_eq!(topo.peers_of(4.into()), [].into());
+        assert_eq!(topo.peers_of(1), [].into());
+        assert_eq!(topo.peers_of(2), [3].into());
+        assert_eq!(topo.peers_of(3), [2].into());
+        assert_eq!(topo.peers_of(4), [].into());
     }
 
     #[test]
@@ -542,7 +553,7 @@ mod test {
         for _ in 0..10 {
             let topo2 = Topology::from_edges(edges.clone());
 
-            if topo1.providers_of(4.into()) != topo2.providers_of(4.into()) {
+            if topo1.providers_of(4) != topo2.providers_of(4) {
                 let (all_paths1, seen1) = topo1.propagate_paths(4, Direction::Up);
                 let (all_paths2, seen2) = topo2.propagate_paths(4, Direction::Up);
 
