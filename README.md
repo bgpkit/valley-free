@@ -40,63 +40,46 @@ A non-comment row in the dataset means:
 
 ### Path Propagation
 
-Instead of finding paths from traffic sources to origins ASes, it simulates
-the AS paths propagation from the origins and recording all the paths the
-propagation reaches. For example, when searching for all potential paths toward
-AS15169, it starts from as15169 on the topology, and find all next hops that
-conform with valley-free routing (i.e. the path with the next hop is still
-valley-free), and then recursively doing depth-first search until no more
-valley-free-conforming next hops can be found. As a result, the paths should
-contain all possible paths toward an asn.
+It generate a graph simulating the AS paths propagation from the origin and 
+creating a graph of all the possible paths in the way of the propagation.
 
-The simluation is recursively done for each given origin ASN. Recursion breaking
-conditions are:
-1. loop detected;
-2. previously propagated from the AS;
-3. all **valid next-hop** ASes have been propagated
+For exemplo for the following topology:
 
-**Valid next-hops** are determined as follows:
-1. if the current path is propagated from a customer, then it can
-propagate to all of its' customers, providers, and peers;
-2. if the current path is propagated from a provider or a peer, it can
-only propagate to its customers.
+![](images/base_topology.svg)
+
+It start from the AS4 and form a direct graph with all next hops that confom 
+wih valley-free routing (i.e. the path with the next hop is stil valley-free),
+and keeps propagate until generate a direct acyclic graph (DAG) with all with the 
+"valley-free view" of the AS4 to the network.
+
+![](images/path_topology.svg)
+
+And then you can use this DAG with all the classic graph methods to analyze it.
+For example, you can find the [length of all shortest paths](https://docs.rs/petgraph/latest/petgraph/algo/k_shortest_path/fn.k_shortest_path.html),
+or even [all the paths](https://docs.rs/petgraph/latest/petgraph/algo/simple_paths/fn.all_simple_paths.html).
 
 ## Usage
 
 ### Rust
 
+#### Install
 ``` toml
 [dependencies]
-valley_free="0.2"
+valley_free="0.3"
 ```
 
-``` rust
-use std::{fs::File, io::BufReader, collections::HashSet};
-use valley_free::*;
-use bzip2::read::BzDecoder;
+#### Examples
+To use the examples expect the [CAIDA-as 2023-12-01 dataset](https://publicdata.caida.org/datasets/as-relationships/serial-1/20231201.as-rel.txt.bz2)
+on the root directory.
 
-fn main(){
-    let mut topo = Topology::new();
-    let file = match File::open("20161101.as-rel.txt.bz2") {
-        Ok(f) => f,
-        Err(_) => panic!("cannot open file"),
-    };
-    let reader = BufReader::new(BzDecoder::new(&file));
-    let res = topo.build_topology(reader);
-    assert!(res.is_ok());
-    assert_eq!(topo.ases_map.len(), 55809);
+The examples are available in the [`examples/`](examples/) direction.
 
-    let mut all_paths = vec![];
-    let mut seen = HashSet::new();
-    topo.propagate_paths(&mut all_paths, 15169, Direction::UP, vec![], &mut seen);
-    dbg!(all_paths.len());
-}
-```
+You can run it with `cargo run --example=<filename without .rs>`.
 
 ### Python
 
-The package is available on PyPi at https://pypi.org/project/valley-free/. For installation, `pip3 install valley-free`
-should do the trick.
+The package is available on PyPi at https://pypi.org/project/valley-free/. 
+For installation, `pip3 install valley-free` should do the trick.
 
 ``` python
 #!/usr/bin/env python3
