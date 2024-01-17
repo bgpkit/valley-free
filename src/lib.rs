@@ -26,7 +26,7 @@ impl Default for RelType {
 }
 
 pub struct Topology {
-    graph: DiGraph<u32, RelType>,
+    pub graph: DiGraph<u32, RelType>,
 }
 
 #[derive(Debug)]
@@ -300,14 +300,6 @@ impl Topology {
         // assert!(!is_cyclic_directed(&graph));
         Topology { graph }
     }
-
-    pub fn raw_graph(&self) -> &DiGraph<u32, RelType> {
-        &self.graph
-    }
-
-    pub fn raw_graph_mut(&mut self) -> &mut DiGraph<u32, RelType> {
-        &mut self.graph
-    }
 }
 
 #[cfg(test)]
@@ -430,7 +422,7 @@ mod test {
         let topo = topo.paths_graph(4);
 
         let has_edge = |asn1: u32, asn2: u32| {
-            topo.raw_graph()
+            topo.graph
                 .find_edge(topo.index_of(asn1).unwrap(), topo.index_of(asn2).unwrap())
                 .is_some()
         };
@@ -446,7 +438,7 @@ mod test {
         assert!(has_edge(3, 5));
         assert!(has_edge(3, 6));
 
-        assert_eq!(topo.raw_graph().edge_count(), 7);
-        assert!(!is_cyclic_directed(topo.raw_graph()));
+        assert_eq!(topo.graph.edge_count(), 7);
+        assert!(!is_cyclic_directed(topo.graph));
     }
 }

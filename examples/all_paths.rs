@@ -31,7 +31,7 @@ fn main() {
         all_paths.push(path.clone());
 
         let childrens = topo
-            .raw_graph()
+            .graph
             .neighbors_directed(node_idx, petgraph::Direction::Outgoing)
             .map(|child_idx| {
                 let mut path = path.clone();
