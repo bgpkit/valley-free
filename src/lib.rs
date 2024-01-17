@@ -189,6 +189,12 @@ impl Topology {
         )
     }
 
+    fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
+        self.graph
+            .find_edge(self.index_of(asn1).unwrap(), self.index_of(asn2).unwrap())
+            .is_some()
+    }
+
     /*
      * Given the following topology:
      *
@@ -223,13 +229,13 @@ impl Topology {
      * petgraph library.
      */
     pub fn paths_graph(&self, asn: u32) -> Topology {
-        let mut graph = DiGraph::new();
+        let mut topo = Topology {
+            graph: DiGraph::new(),
+        };
 
-        let node_map: HashMap<u32, NodeIndex> = self
-            .all_asns()
-            .into_iter()
-            .map(|asn| (asn, graph.add_node(asn)))
-            .collect();
+        self.all_asns().into_iter().for_each(|asn| {
+            topo.graph.add_node(asn);
+        });
 
         let mut up_path_queue = VecDeque::<u32>::new();
         let mut up_seen = HashSet::new();
@@ -248,9 +254,9 @@ impl Topology {
                 up_seen.insert(provider_asn);
                 up_path_queue.push_back(provider_asn);
 
-                graph.add_edge(
-                    *node_map.get(&asn).unwrap(),
-                    *node_map.get(&provider_asn).unwrap(),
+                topo.graph.add_edge(
+                    topo.index_of(asn).unwrap(),
+                    topo.index_of(provider_asn).unwrap(),
                     RelType::CustomerToProvider,
                 );
             }
@@ -262,11 +268,14 @@ impl Topology {
         for asn in up_seen.clone().into_iter() {
             for peer_asn in self.peers_of(asn).unwrap() {
                 peer_seen.insert(peer_asn);
-                graph.add_edge(
-                    *node_map.get(&asn).unwrap(),
-                    *node_map.get(&peer_asn).unwrap(),
-                    RelType::PearToPear,
-                );
+
+                if !self.has_connection(peer_asn, asn) {
+                    topo.graph.add_edge(
+                        topo.index_of(asn).unwrap(),
+                        topo.index_of(peer_asn).unwrap(),
+                        RelType::PearToPear,
+                    );
+                }
             }
         }
 
@@ -284,15 +293,15 @@ impl Topology {
             let asn = down_path_queue.pop_front().unwrap();
 
             for customer_asn in self.customers_of(asn).unwrap() {
-                if up_seen.contains(&customer_asn) {
-                    continue;
+                if !topo.has_connection(customer_asn, asn)
+                    && !topo.has_connection(asn, customer_asn)
+                {
+                    topo.graph.add_edge(
+                        topo.index_of(asn).unwrap(),
+                        topo.index_of(customer_asn).unwrap(),
+                        RelType::ProviderToCustomer,
+                    );
                 }
-
-                graph.add_edge(
-                    *node_map.get(&asn).unwrap(),
-                    *node_map.get(&customer_asn).unwrap(),
-                    RelType::ProviderToCustomer,
-                );
 
                 if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
                     down_seen.insert(customer_asn);
@@ -302,7 +311,7 @@ impl Topology {
         }
 
         // assert!(!is_cyclic_directed(&graph));
-        Topology { graph }
+        topo
     }
 
     pub fn shortest_path_to(&self, source: u32, target: u32) -> Option<TopologyPath> {
@@ -395,20 +404,21 @@ impl Topology {
 
 #[cfg(test)]
 mod test {
-    use petgraph::algo::is_cyclic_directed;
+    use std::task::Wake;
+
+    use petgraph::{algo::is_cyclic_directed, dot::Dot};
 
     use super::*;
 
-    /*
-     *       ┌───────┐
+    /*       ┌───────┐
      *       │   1   │
-     *       └───┬───┘
-     *     ┌─────┴─────┐
+     *       └──┬─┬──┘
+     *     ┌────┘ └────┐
      * ┌───▼───┐   ┌───▼───┐
-     * │   2   │   │   3   │
+     * │   2   ◄───►   3   │
      * └───┬───┘   └───┬───┘
-     *     └─────┬─────┘
-     *       ┌───▼───┐
+     *     └────┐ ┌────┘
+     *       ┌──▼─▼──┐
      *       │   4   │
      *       └───────┘
      */
@@ -419,6 +429,29 @@ mod test {
             (3, 2, RelType::PearToPear),
             (3, 4, RelType::ProviderToCustomer),
             (2, 4, RelType::ProviderToCustomer),
+        ])
+    }
+
+    /*               ┌─────┐
+     *               │  1  │
+     *               └──┬──┘
+     *           ┌──────┴─────┐
+     *        ┌──▼──┐      ┌──▼──┐
+     *        │  2  │      │  3  │
+     *        └──┬──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──▼──┐     ┌─▼──▼─┐    ┌──▼──┐
+     *  │  4  │     │  05  │    │  6  │
+     *  └─────┘     └──────┘    └─────┘
+     */
+    fn piramid_topology() -> Topology {
+        Topology::from_edges(vec![
+            (1, 2, RelType::ProviderToCustomer),
+            (1, 3, RelType::ProviderToCustomer),
+            (2, 4, RelType::ProviderToCustomer),
+            (2, 5, RelType::ProviderToCustomer),
+            (3, 5, RelType::ProviderToCustomer),
+            (3, 6, RelType::ProviderToCustomer),
         ])
     }
 
@@ -471,12 +504,6 @@ mod test {
         assert!(topo.is_ok());
     }
 
-    fn has_edge(topo: &Topology, asn1: u32, asn2: u32) -> bool {
-        topo.graph
-            .find_edge(topo.index_of(asn1).unwrap(), topo.index_of(asn2).unwrap())
-            .is_some()
-    }
-
     #[test]
     /* Input:
      *               ┌─────┐
@@ -518,7 +545,7 @@ mod test {
 
         let topo = topo.paths_graph(4);
 
-        let has_edge = |asn1: u32, asn2: u32| has_edge(&topo, asn1, asn2);
+        let has_edge = |asn1: u32, asn2: u32| topo.has_connection(asn1, asn2);
 
         assert!(has_edge(4, 2));
 
@@ -536,11 +563,24 @@ mod test {
     }
 
     #[test]
+    /* One possible expected output
+     *       ┌───────┐
+     *       │   1   │
+     *       └──▲─┬──┘
+     *     ┌────┘ └────┐
+     * ┌───┴───┐   ┌───▼───┐
+     * │   2   ├───►   3   │
+     * └───▲───┘   └───▲───┘
+     *     └────┐ ┌────┘
+     *       ┌──┴─┴──┐
+     *       │   4   │
+     *       └───────┘
+     */
     fn test_path_graph_with_ciclic() {
         let topo = diamond_topology();
         let topo = topo.paths_graph(4);
 
-        let has_edge = |asn1: u32, asn2: u32| has_edge(&topo, asn1, asn2);
+        let has_edge = |asn1: u32, asn2: u32| topo.has_connection(asn1, asn2);
 
         assert!(!is_cyclic_directed(&topo.graph));
         assert!(has_edge(4, 2));
@@ -561,35 +601,38 @@ mod test {
 
     #[test]
     fn test_shortest_path_to() {
-        let topo = diamond_topology();
+        let topo = piramid_topology();
         let topo = topo.paths_graph(4);
 
-        let path = topo.shortest_path_to(4, 3).unwrap();
-        assert_eq!(path, vec![4, 3]);
+        let path = topo.shortest_path_to(4, 6).unwrap();
+        assert_eq!(path, vec![4, 2, 1, 3, 6]);
     }
 
     #[test]
     fn test_all_paths_to() {
-        let topo = diamond_topology();
+        let topo = piramid_topology();
         let topo = topo.paths_graph(4);
 
-        let paths = topo.all_paths_to(4, 3).unwrap().collect::<Vec<_>>();
+        let paths = topo.all_paths_to(4, 5).unwrap().collect::<Vec<_>>();
 
-        assert!(paths.contains(&[4, 3].into()));
-        assert!(paths.contains(&[4, 2, 3].into()));
-        assert!(paths.contains(&[4, 2, 1, 3].into()));
-        assert_eq!(paths.len(), 3);
+        assert!(paths.contains(&[4, 2, 5].into()));
+        assert!(paths.contains(&[4, 2, 1, 3, 5].into()));
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]
     fn test_path_to_all_ases() {
-        let topo = diamond_topology();
+        let topo = piramid_topology();
+        let topo = topo.paths_graph(4);
+
         let paths = topo.path_to_all_ases(4).unwrap();
 
         assert!(paths.contains(&[4].into()));
         assert!(paths.contains(&[4, 2].into()));
+        assert!(paths.contains(&[4, 2, 5].into()) || paths.contains(&[4, 2, 1, 3, 5].into()));
         assert!(paths.contains(&[4, 2, 1].into()));
-        assert!(paths.contains(&[4, 3].into()));
-        assert_eq!(paths.len(), 4);
+        assert!(paths.contains(&[4, 2, 1, 3].into()));
+        assert!(paths.contains(&[4, 2, 1, 3, 6].into()));
+        assert_eq!(paths.len(), 6);
     }
 }
