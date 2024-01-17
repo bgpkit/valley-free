@@ -2,7 +2,7 @@
 /// AS-relationship data file and run path exploration using valley-free routing
 /// principle.
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     io,
 };
 
@@ -237,22 +237,21 @@ impl Topology {
             topo.graph.add_node(asn);
         });
 
-        let mut up_path_queue = VecDeque::<u32>::new();
-        let mut up_seen = HashSet::new();
+        let mut up_path_queue = Vec::new();
+        let mut up_seen = Vec::new();
 
         // add first
-        up_path_queue.push_back(asn);
-        up_seen.insert(asn);
+        up_path_queue.push(asn);
 
         while !up_path_queue.is_empty() {
-            let asn = up_path_queue.pop_front().unwrap(); // While check if has elements
+            let asn = up_path_queue.pop().unwrap(); // While check if has elements
+            up_seen.push(asn);
 
             for provider_asn in self.providers_of(asn).unwrap() {
                 if up_seen.contains(&provider_asn) {
                     continue;
                 }
-                up_seen.insert(provider_asn);
-                up_path_queue.push_back(provider_asn);
+                up_path_queue.push(provider_asn);
 
                 topo.graph.add_edge(
                     topo.index_of(asn).unwrap(),
@@ -262,14 +261,15 @@ impl Topology {
             }
         }
 
-        let mut peer_seen = HashSet::new();
+        let mut peer_seen = Vec::new();
         // Iterate over all ASes reach by UP
         // They can only do one PEAR, so we don't need a queue
+        // In order to avoid cycle, we need to first iterate with was first acess by UP
         for asn in up_seen.clone().into_iter() {
             for peer_asn in self.peers_of(asn).unwrap() {
-                peer_seen.insert(peer_asn);
+                peer_seen.push(peer_asn);
 
-                if !self.has_connection(peer_asn, asn) {
+                if !topo.has_connection(peer_asn, asn) {
                     topo.graph.add_edge(
                         topo.index_of(asn).unwrap(),
                         topo.index_of(peer_asn).unwrap(),
@@ -279,18 +279,16 @@ impl Topology {
             }
         }
 
-        let mut down_seen = HashSet::new();
+        let mut down_seen = Vec::new();
 
-        let mut down_path_queue = VecDeque::<u32>::new();
-        up_seen
-            .iter()
-            .for_each(|asn| down_path_queue.push_back(*asn));
-        peer_seen
-            .iter()
-            .for_each(|asn| down_path_queue.push_back(*asn));
+        let mut down_path_queue: Vec<_> = up_seen
+            .into_iter()
+            .chain(peer_seen.into_iter())
+            .rev() // down propagate fisrt up then peer
+            .collect();
 
         while !down_path_queue.is_empty() {
-            let asn = down_path_queue.pop_front().unwrap();
+            let asn = down_path_queue.pop().unwrap();
 
             for customer_asn in self.customers_of(asn).unwrap() {
                 if !topo.has_connection(customer_asn, asn)
@@ -304,8 +302,8 @@ impl Topology {
                 }
 
                 if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
-                    down_seen.insert(customer_asn);
-                    down_path_queue.push_back(customer_asn);
+                    down_seen.push(customer_asn);
+                    down_path_queue.push(customer_asn);
                 }
             }
         }
@@ -354,7 +352,6 @@ impl Topology {
             None,
         );
 
-        println!("Paths from UT to USP:");
         let paths = paths.map(move |path| {
             path.iter()
                 .map(|node| self.asn_of(*node))
@@ -404,9 +401,11 @@ impl Topology {
 
 #[cfg(test)]
 mod test {
-    use std::task::Wake;
+    use std::{env, fs::File};
 
+    use bzip2::read::BzDecoder;
     use petgraph::{algo::is_cyclic_directed, dot::Dot};
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
     use super::*;
 
@@ -455,6 +454,22 @@ mod test {
         ])
     }
 
+    fn get_caida_data() -> impl std::io::Read {
+        let cachefile = env::temp_dir().join("20231201.as-rel.txt.bz2");
+        if cachefile.exists() {
+            return BzDecoder::new(File::open(cachefile).unwrap());
+        }
+
+        let url = "https://publicdata.caida.org/datasets/as-relationships/serial-1/20231201.as-rel.txt.bz2";
+        let mut response = reqwest::blocking::get(url).unwrap();
+
+        response
+            .copy_to(&mut File::create(cachefile.clone()).unwrap())
+            .unwrap();
+
+        BzDecoder::new(File::open(cachefile).unwrap())
+    }
+
     #[test]
     fn test_all_asns() {
         let topo = diamond_topology();
@@ -500,6 +515,13 @@ mod test {
 2|4|-1
 3|4|-1"#;
         let topo = Topology::from_caida(test_rel.as_bytes());
+
+        assert!(topo.is_ok());
+    }
+
+    #[test]
+    fn test_from_real_caida() {
+        let topo = Topology::from_caida(get_caida_data());
 
         assert!(topo.is_ok());
     }
@@ -582,6 +604,8 @@ mod test {
 
         let has_edge = |asn1: u32, asn2: u32| topo.has_connection(asn1, asn2);
 
+        println!("{:?}", Dot::new(&topo.graph));
+
         assert!(!is_cyclic_directed(&topo.graph));
         assert!(has_edge(4, 2));
         assert!(has_edge(4, 3));
@@ -597,6 +621,17 @@ mod test {
         } else {
             panic!("should have edge between 2 and 3");
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_path_graph_never_generate_ciclic() {
+        let topo = Topology::from_caida(get_caida_data()).unwrap();
+
+        topo.all_asns().into_par_iter().for_each(|asn| {
+            let topo = topo.paths_graph(asn);
+            assert!(!is_cyclic_directed(&topo.graph));
+        });
     }
 
     #[test]
