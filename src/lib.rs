@@ -2,381 +2,451 @@
 /// AS-relationship data file and run path exploration using valley-free routing
 /// principle.
 use std::{
-    collections::{HashMap, HashSet},
-    io::BufRead,
+    collections::{HashMap, HashSet, VecDeque},
+    io,
 };
-use std::{fs::File, io::BufReader};
 
-use bzip2::read::BzDecoder;
-use pyo3::prelude::*;
-use pyo3::{exceptions::PyIOError, wrap_pyfunction};
+use petgraph::{
+    graph::{DiGraph, NodeIndex},
+    visit::EdgeRef,
+};
 
-/// AS relationship types: CUSTOMER, PROVIDER, and PEER
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 pub enum RelType {
-    CUSTOMER,
-    PROVIDER,
-    PEER,
+    CustomerToProvider,
+    PearToPear,
+    ProviderToCustomer,
 }
 
-/// Direction of where the current current propagation going.
-pub enum Direction {
-    /// Propagating to a provider AS
-    UP,
-    /// Propagating to a customer AS
-    DOWN,
-    /// Propagating to a peer AS
-    PEER,
-}
-
-/// Define type alias Path as Vec<u32>
-pub type Path = Vec<u32>;
-
-/// Definiton of AS struct
-#[pyclass]
-#[derive(Clone)]
-pub struct As {
-    /// Autonomous system number
-    #[pyo3(get, set)]
-    pub asn: u32,
-
-    /// Set of customer ASes
-    #[pyo3(get, set)]
-    pub customers: HashSet<u32>,
-
-    /// Set of provider ASes
-    #[pyo3(get, set)]
-    pub providers: HashSet<u32>,
-
-    /// Set of peer ASes
-    #[pyo3(get, set)]
-    pub peers: HashSet<u32>,
-}
-
-impl As {
-    /// Insert another AS as related AS
-    fn insert_rel(&mut self, rel_type: RelType, other: u32) {
-        match rel_type {
-            RelType::CUSTOMER => {
-                self.customers.insert(other);
-            }
-            RelType::PEER => {
-                self.peers.insert(other);
-            }
-            RelType::PROVIDER => {
-                self.providers.insert(other);
-            }
-        }
+// Required to work as a edge
+impl Default for RelType {
+    fn default() -> Self {
+        RelType::ProviderToCustomer
     }
 }
 
-/// Definition of Topology
-#[pyclass]
-#[derive(FromPyObject)]
 pub struct Topology {
-    /// Hashmap of ASes: ASN (u32) to [As]
-    #[pyo3(get)]
-    pub ases_map: HashMap<u32, As>,
+    graph: DiGraph<u32, RelType>,
+}
+
+#[derive(Debug)]
+pub enum TopologyError {
+    IoError(io::Error),
+    ParseAsnError(std::num::ParseIntError),
+    ParseError(String),
 }
 
 impl Topology {
-    /// Constructor of the Topology struct
-    pub fn new() -> Topology {
-        Topology {
-            ases_map: HashMap::new(),
-        }
+    pub fn from_edges(edges: Vec<(u32, u32, RelType)>) -> Self {
+        let mut graph = DiGraph::new();
+
+        let nodes: HashSet<u32> = edges
+            .iter()
+            .flat_map(|(asn1, asn2, _)| vec![*asn1, *asn2])
+            .collect();
+
+        let asn2index: HashMap<u32, NodeIndex> = nodes
+            .into_iter()
+            .map(|asn| (asn, graph.add_node(asn)))
+            .collect();
+
+        graph.extend_with_edges(edges.into_iter().map(|(asn1, asn2, rel)| {
+            (
+                *asn2index.get(&asn1).unwrap(),
+                *asn2index.get(&asn2).unwrap(),
+                rel,
+            )
+        }));
+
+        Topology { graph }
     }
 
-    fn get_or_insert(&mut self, asn: u32) -> u32 {
-        match self.ases_map.entry(asn) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => v.insert(As {
-                asn: asn,
-                customers: HashSet::new(),
-                providers: HashSet::new(),
-                peers: HashSet::new(),
-            }),
-        }
-        .asn
-    }
+    pub fn from_caida(reader: impl std::io::Read) -> Result<Self, TopologyError> {
+        let content = reader
+            .bytes()
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(TopologyError::IoError)?;
 
-    fn add_rel(&mut self, asn1: u32, asn2: u32, rel_type: RelType) {
-        let as1 = self.ases_map.get_mut(&asn1).unwrap();
-        as1.insert_rel(rel_type, asn2);
-    }
+        let content = String::from_utf8(content).map_err(|e| {
+            TopologyError::ParseError(format!("invalid UTF-8 in AS relationship file: {}", e))
+        })?;
 
-    /// Build the Topology using [CAIDA AS-relationship][asrel] datafile.
-    ///
-    /// This function takes an reader that implements [BufRead] trait, read
-    /// lines from the reader, and parse the input.
-    ///
-    /// The CAIDA's AS-relationship data is formatted as follows:
-    /// ```example
-    /// ## A FEW LINES OF COMMENT
-    /// ## A FEW LINES OF COMMENT
-    /// ## A FEW LINES OF COMMENT
-    /// 1|7470|0
-    /// 1|9931|-1
-    /// 1|11537|0
-    /// 1|25418|0
-    /// 2|35000|0
-    /// 2|263686|0
-    /// ...
-    /// ```
-    ///
-    /// The data format is:
-    /// ```example
-    /// <provider-as>|<customer-as>|-1
-    /// <peer-as>|<peer-as>|0
-    /// ```
-    ///
-    /// [asrel]: https://www.caida.org/data/as-relationships/
-    pub fn build_topology(&mut self, reader: impl BufRead) -> Result<(), String> {
-        for line in reader.lines() {
-            let line: String = match line {
-                Ok(l) => l,
-                Err(e) => return Err(e.to_string()),
-            };
-            if line.starts_with("#") {
-                continue;
-            }
-            let fields = line.split("|").collect::<Vec<&str>>();
-            let asn1 = fields[0].parse::<u32>().unwrap();
-            let asn2 = fields[1].parse::<u32>().unwrap();
-            let rel = fields[2].parse::<i32>().unwrap();
+        let edges = content
+            .lines()
+            .filter(|line| !line.starts_with("#"))
+            .map(|line| {
+                let fields = line.split("|").collect::<Vec<&str>>();
+                let asn1 = fields[0]
+                    .parse::<u32>()
+                    .map_err(TopologyError::ParseAsnError)?;
+                let asn2 = fields[1]
+                    .parse::<u32>()
+                    .map_err(TopologyError::ParseAsnError)?;
+                let rel = fields[2]
+                    .parse::<i32>()
+                    .map_err(TopologyError::ParseAsnError)?;
 
-            let asn1 = self.get_or_insert(asn1);
-            let asn2 = self.get_or_insert(asn2);
-
-            match rel {
-                0 => {
+                match rel {
                     // asn1 and asn2 are peers
-                    self.add_rel(asn1, asn2, RelType::PEER);
-                    self.add_rel(asn2, asn1, RelType::PEER);
+                    0 => Ok((asn1, asn2, RelType::PearToPear)),
+
+                    // asn1 is a provider of asn2
+                    -1 => Ok((asn1, asn2, RelType::ProviderToCustomer)),
+
+                    _ => Err(TopologyError::ParseError(format!(
+                        "unknown relationship type {} in {}",
+                        rel, line
+                    ))),
                 }
-                -1 => {
-                    // asn1 is the provider of asn2
-                    self.add_rel(asn1, asn2, RelType::CUSTOMER);
-                    self.add_rel(asn2, asn1, RelType::PROVIDER);
+            })
+            .collect::<Result<Vec<(u32, u32, RelType)>, _>>()?;
+
+        Ok(Topology::from_edges(edges))
+    }
+
+    pub fn asn_of(&self, index: NodeIndex) -> u32 {
+        *self.graph.node_weight(index).unwrap()
+    }
+
+    pub fn index_of(&self, asn: u32) -> Option<NodeIndex> {
+        self.graph
+            .node_indices()
+            .find(|&index| self.asn_of(index) == asn)
+    }
+
+    pub fn all_asns(&self) -> HashSet<u32> {
+        self.graph
+            .raw_nodes()
+            .iter()
+            .map(|node| node.weight)
+            .collect()
+    }
+
+    pub fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let incoming = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .map(|edge| edge.source());
+
+        let outgoing = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
+            .map(|edge| edge.target());
+
+        Some(
+            incoming
+                .chain(outgoing)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    pub fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let outgoing = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .map(|edge| edge.target());
+
+        let incoming = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
+            .map(|edge| edge.source());
+
+        Some(
+            outgoing
+                .chain(incoming)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    pub fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let outgoing = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .map(|edge| edge.target());
+
+        let incoming = self
+            .graph
+            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .map(|edge| edge.source());
+
+        Some(
+            outgoing
+                .chain(incoming)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    /*
+     * Given the following topology:
+     *
+     *               ┌─────┐
+     *               │     │
+     *               └──┬──┘
+     *           ┌──────┴─────┐
+     *        ┌──▼──┐      ┌──▼──┐
+     *        │     ◄──────►     │
+     *        └──┬──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──▼──┐     ┌─▼──▼┐     ┌──▼──┐
+     *  │     │     │     │     │     │
+     *  └─────┘     └─────┘     └─────┘
+     *
+     *  This method generate a DAG with all paths from the given AS to all other AS-relationship
+     *  following the valley-free principle.
+     *
+     *              ┌─────┐
+     *              │     │
+     *              └──▲──┘
+     *          ┌──────┴─────┐
+     *       ┌──┴──┐      ┌──▼──┐
+     *       │     ├──────►     │
+     *       └──▲──┘      └──┬──┘
+     *    ┌─────┴────┐  ┌────┴────┐
+     * ┌──┴──┐     ┌─▼──▼┐     ┌──▼──┐
+     * │     │     │     │     │     │
+     * └─────┘     └─────┘     └─────┘
+     *
+     * You can use this graph to calculate the shortest path or even list all paths using the
+     * petgraph library.
+     */
+    pub fn paths_graph(&self, asn: u32) -> Topology {
+        let mut graph = DiGraph::new();
+
+        let node_map: HashMap<u32, NodeIndex> = self
+            .all_asns()
+            .into_iter()
+            .map(|asn| (asn, graph.add_node(asn)))
+            .collect();
+
+        let mut up_path_queue = VecDeque::<u32>::new();
+        let mut up_seen = HashSet::new();
+
+        // add first
+        up_path_queue.push_back(asn);
+        up_seen.insert(asn);
+
+        while !up_path_queue.is_empty() {
+            let asn = up_path_queue.pop_front().unwrap(); // While check if has elements
+
+            for provider_asn in self.providers_of(asn).unwrap() {
+                if up_seen.contains(&provider_asn) {
+                    continue;
                 }
-                _ => return Err(format!("unknown relationship type {} in {}", rel, line)),
+                up_seen.insert(provider_asn);
+                up_path_queue.push_back(provider_asn);
+
+                graph.add_edge(
+                    *node_map.get(&asn).unwrap(),
+                    *node_map.get(&provider_asn).unwrap(),
+                    RelType::CustomerToProvider,
+                );
             }
         }
 
-        Ok(())
-    }
-
-    /// Recursively calculate path propagation results.
-    ///
-    /// Recursion breaking conditions:
-    /// 1. loop detected;
-    /// 2. previously propagated from the AS;
-    /// 3. all connected ASes have been called
-    ///
-    /// Propagation logic:
-    /// 1. if the current path is propagated from a customer, then it can
-    /// propagate to all of its' customers, providers, and peers
-    /// 2. if the current path is propagated from a provider or a peer, it can
-    /// only propagate to its customers (thus achiving valley-free)
-    ///
-    /// Full example: to explore all paths toward AS123, call
-    /// ```no_run
-    /// use std::{fs::File, io::BufReader, collections::HashSet};
-    /// use valley_free::*;
-    /// use bzip2::read::BzDecoder;
-    ///
-    /// let mut topo = Topology::new();
-    /// let file = match File::open("20161101.as-rel.txt.bz2") {
-    ///     Ok(f) => f,
-    ///     Err(_) => panic!("cannot open file"),
-    /// };
-    /// let reader = BufReader::new(BzDecoder::new(&file));
-    /// let res = topo.build_topology(reader);
-    ///
-    /// let mut all_paths = vec![];
-    /// let mut seen = HashSet::new();
-    /// topo.propagate_paths(&mut all_paths, 15169, Direction::UP, vec![], &mut seen);
-    /// dbg!(all_paths.len());
-    /// ```
-    ///
-    /// Arguments:
-    /// - `all_paths`: a muttable Vector of [Path]s passed in to store explored paths
-    /// - `asn`: the current ASN that will propagate paths
-    /// - `dir`: the [Direction] of the propagation
-    /// - `path`: the path so far(not including the current AS)
-    /// - `seen`: a [HashSet] of ASes that it has explored already
-    pub fn propagate_paths(
-        &self,
-        all_paths: &mut Vec<Path>,
-        asn: u32,
-        dir: Direction,
-        path: Path,
-        seen: &mut HashSet<u32>,
-    ) {
-        if path.contains(&asn) {
-            // detected a loop
-            return;
-        }
-
-        // reaching here means the path + current as should be good to use
-        let mut new_path = path.clone();
-        new_path.push(asn);
-        all_paths.push(new_path.clone());
-
-        if seen.contains(&asn) {
-            // we have seen this AS from other branches, meaning we have tried propagation from
-            // this AS already. so we skip propagation here.
-            // NOTE: we still add this path to the paths list. see `test_multiple_paths_to_origin`
-            //       test function for more.
-            return;
-        }
-
-        seen.insert(asn);
-
-        let as_ptr = self.ases_map.get(&asn).unwrap();
-        match dir {
-            Direction::UP => {
-                // we are propagating up in the current step, thus we can
-                // continue to all directions
-                for customer_asn in &as_ptr.customers {
-                    self.propagate_paths(
-                        all_paths,
-                        *customer_asn,
-                        Direction::DOWN,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
-
-                for peer_asn in &as_ptr.peers {
-                    self.propagate_paths(
-                        all_paths,
-                        *peer_asn,
-                        Direction::PEER,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
-
-                for provider_asn in &as_ptr.providers {
-                    self.propagate_paths(
-                        all_paths,
-                        *provider_asn,
-                        Direction::UP,
-                        new_path.clone(),
-                        seen,
-                    );
-                }
+        let mut peer_seen = HashSet::new();
+        // Iterate over all ASes reach by UP
+        // They can only do one PEAR, so we don't need a queue
+        for asn in up_seen.clone().into_iter() {
+            for peer_asn in self.peers_of(asn).unwrap() {
+                peer_seen.insert(peer_asn);
+                graph.add_edge(
+                    *node_map.get(&asn).unwrap(),
+                    *node_map.get(&peer_asn).unwrap(),
+                    RelType::PearToPear,
+                );
             }
-            Direction::DOWN | Direction::PEER => {
-                for customer_asn in &as_ptr.customers {
-                    self.propagate_paths(
-                        all_paths,
-                        *customer_asn,
-                        Direction::DOWN,
-                        new_path.clone(),
-                        seen,
-                    );
+        }
+
+        let mut down_seen = HashSet::new();
+
+        let mut down_path_queue = VecDeque::<u32>::new();
+        up_seen
+            .iter()
+            .for_each(|asn| down_path_queue.push_back(*asn));
+        peer_seen
+            .iter()
+            .for_each(|asn| down_path_queue.push_back(*asn));
+
+        while !down_path_queue.is_empty() {
+            let asn = down_path_queue.pop_front().unwrap();
+
+            for customer_asn in self.customers_of(asn).unwrap() {
+                if up_seen.contains(&customer_asn) {
+                    continue;
+                }
+
+                graph.add_edge(
+                    *node_map.get(&asn).unwrap(),
+                    *node_map.get(&customer_asn).unwrap(),
+                    RelType::ProviderToCustomer,
+                );
+
+                if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
+                    down_seen.insert(customer_asn);
+                    down_path_queue.push_back(customer_asn);
                 }
             }
         }
+
+        // assert!(!is_cyclic_directed(&graph));
+        Topology { graph }
     }
-}
 
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn load_topology<'a>(py: Python, file_path: String) -> PyResult<&PyCell<Topology>> {
-    let mut topo = Topology::new();
-    let file = match File::open(&file_path) {
-        Ok(f) => f,
-        Err(_) => panic!("cannot open file"),
-    };
-    let reader = BufReader::new(BzDecoder::new(&file));
-    match topo.build_topology(reader) {
-        Ok(_) => {
-            let topo_cell = PyCell::new(py, topo).unwrap();
-            Ok(topo_cell)
-        }
-        Err(_) => Err(PyIOError::new_err("cannot load topology file")),
+    pub fn raw_graph(&self) -> &DiGraph<u32, RelType> {
+        &self.graph
     }
-}
 
-#[pyfunction]
-fn propagate_paths<'a>(topo: &Topology, asn: u32) -> PyResult<Vec<Vec<u32>>> {
-    let mut all_paths = vec![];
-    let mut seen = HashSet::new();
-    topo.propagate_paths(&mut all_paths, asn, Direction::UP, vec![], &mut seen);
-    Ok(all_paths)
-}
-
-/// A Python module implemented in Rust.
-#[pymodule]
-fn valley_free(_: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(load_topology, m)?)?;
-    m.add_function(wrap_pyfunction!(propagate_paths, m)?)?;
-    Ok(())
+    pub fn raw_graph_mut(&mut self) -> &mut DiGraph<u32, RelType> {
+        &mut self.graph
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{fs::File, io::BufReader};
+mod test {
+    use petgraph::algo::is_cyclic_directed;
 
-    use crate::*;
-    use bzip2::read::BzDecoder;
+    use super::*;
 
-    #[test]
-    fn build_topology() {
-        let mut topo = Topology::new();
-        let file = match File::open("20161101.as-rel.txt.bz2") {
-            Ok(f) => f,
-            Err(_) => panic!("cannot open file"),
-        };
-        let reader = BufReader::new(BzDecoder::new(&file));
-        let res = topo.build_topology(reader);
-
-        assert!(res.is_ok());
-        assert_eq!(topo.ases_map.len(), 55809);
+    /*
+     *       ┌───────┐
+     *       │   1   │
+     *       └───┬───┘
+     *     ┌─────┴─────┐
+     * ┌───▼───┐   ┌───▼───┐
+     * │   2   │   │   3   │
+     * └───┬───┘   └───┬───┘
+     *     └─────┬─────┘
+     *       ┌───▼───┐
+     *       │   4   │
+     *       └───────┘
+     */
+    fn diamond_topology() -> Topology {
+        Topology::from_edges(vec![
+            (1, 2, RelType::ProviderToCustomer),
+            (1, 3, RelType::ProviderToCustomer),
+            (3, 2, RelType::PearToPear),
+            (3, 4, RelType::ProviderToCustomer),
+            (2, 4, RelType::ProviderToCustomer),
+        ])
     }
 
     #[test]
-    fn propagate() {
-        let mut topo = Topology::new();
-        let file = match File::open("20161101.as-rel.txt.bz2") {
-            Ok(f) => f,
-            Err(_) => panic!("cannot open file"),
-        };
-        let reader = BufReader::new(BzDecoder::new(&file));
-        let res = topo.build_topology(reader);
-        assert!(res.is_ok());
-        assert_eq!(topo.ases_map.len(), 55809);
+    fn test_all_asns() {
+        let topo = diamond_topology();
 
-        let mut all_paths = vec![];
-        let mut seen = HashSet::new();
-        topo.propagate_paths(&mut all_paths, 15169, Direction::UP, vec![], &mut seen);
-        dbg!(all_paths.len());
+        assert_eq!(topo.all_asns(), [1, 2, 3, 4].into());
     }
 
     #[test]
-    fn test_multiple_paths_to_origin() {
-        let mut topo = Topology::new();
+    fn test_providers() {
+        let topo = diamond_topology();
+
+        assert_eq!(topo.providers_of(1), Some([].into()));
+        assert_eq!(topo.providers_of(2), Some([1].into()));
+        assert_eq!(topo.providers_of(3), Some([1].into()));
+        assert_eq!(topo.providers_of(4), Some([2, 3].into()));
+    }
+
+    #[test]
+    fn test_customers() {
+        let topo = diamond_topology();
+
+        assert_eq!(topo.customers_of(1), Some([3, 2].into()));
+        assert_eq!(topo.customers_of(2), Some([4].into()));
+        assert_eq!(topo.customers_of(3), Some([4].into()));
+        assert_eq!(topo.customers_of(4), Some([].into()));
+    }
+
+    #[test]
+    fn test_peers() {
+        let topo = diamond_topology();
+
+        assert_eq!(topo.peers_of(1), Some([].into()));
+        assert_eq!(topo.peers_of(2), Some([3].into()));
+        assert_eq!(topo.peers_of(3), Some([2].into()));
+        assert_eq!(topo.peers_of(4), Some([].into()));
+    }
+
+    #[test]
+    fn test_from_caida() {
         let test_rel = r#"# xxx
 1|2|-1
 1|3|-1
 2|4|-1
 3|4|-1"#;
-        let reader = BufReader::new(test_rel.as_bytes());
-        let res = topo.build_topology(reader);
-        assert!(res.is_ok());
-        assert_eq!(topo.ases_map.len(), 4);
+        let topo = Topology::from_caida(test_rel.as_bytes());
 
-        let mut all_paths = vec![];
-        let mut seen = HashSet::new();
-        topo.propagate_paths(&mut all_paths, 1, Direction::UP, vec![], &mut seen);
+        assert!(topo.is_ok());
+    }
 
-        assert_eq!(all_paths.len(), 5);
-        assert!(all_paths.contains(&vec![1]));
-        assert!(all_paths.contains(&vec![1,2]));
-        assert!(all_paths.contains(&vec![1,2,4]));
-        assert!(all_paths.contains(&vec![1,3]));
-        assert!(all_paths.contains(&vec![1,3,4]));
+    #[test]
+    /* Input:
+     *               ┌─────┐
+     *               │  1  │
+     *               └──┬──┘
+     *           ┌──────┴─────┐
+     *        ┌──▼──┐      ┌──▼──┐
+     *        │  2  ◄──────►  3  │
+     *        └──┬──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──▼──┐     ┌─▼──▼─┐    ┌──▼──┐
+     *  │  4  │     │  05  │    │  6  │
+     *  └─────┘     └──────┘    └─────┘
+     *
+     * Expected output:
+     *               ┌─────┐
+     *               │  1  │
+     *               └──▲──┘
+     *           ┌──────┴─────┐
+     *        ┌──┴──┐      ┌──▼──┐
+     *        │  2  ├──────►  3  │
+     *        └──▲──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──┴──┐     ┌─▼──▼─┐    ┌──▼──┐
+     *  │  4  │     │  05  │    │  6  │
+     *  └─────┘     └──────┘    └─────┘
+     *
+     */
+    fn test_path_graph() {
+        let topo = Topology::from_edges(vec![
+            (1, 2, RelType::ProviderToCustomer),
+            (1, 3, RelType::ProviderToCustomer),
+            (2, 4, RelType::ProviderToCustomer),
+            (2, 5, RelType::ProviderToCustomer),
+            (2, 3, RelType::PearToPear),
+            (3, 5, RelType::ProviderToCustomer),
+            (3, 6, RelType::ProviderToCustomer),
+        ]);
+
+        let topo = topo.paths_graph(4);
+
+        let has_edge = |asn1: u32, asn2: u32| {
+            topo.raw_graph()
+                .find_edge(topo.index_of(asn1).unwrap(), topo.index_of(asn2).unwrap())
+                .is_some()
+        };
+
+        assert!(has_edge(4, 2));
+
+        assert!(has_edge(2, 1));
+        assert!(has_edge(2, 3));
+        assert!(has_edge(2, 5));
+
+        assert!(has_edge(1, 3));
+
+        assert!(has_edge(3, 5));
+        assert!(has_edge(3, 6));
+
+        assert_eq!(topo.raw_graph().edge_count(), 7);
+        assert!(!is_cyclic_directed(topo.raw_graph()));
     }
 }

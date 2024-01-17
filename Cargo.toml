@@ -4,8 +4,8 @@ description = "BGP valley-free routing AS path exploration library"
 keywords = ["bgp", "valley-free", "network", "simulation"]
 repository = "https://github.com/bgpkit/valley-free"
 documentation = "https://docs.rs/valley-free"
-version = "0.2.0"
-authors = ["Mingwei Zhang <mingwei@bgpkit.com>"]
+version = "0.3.0"
+authors = ["Mingwei Zhang <mingwei@bgpkit.com>", "Guilherme Salustiano <guissalustiano@gmail.com>"]
 edition = "2018"
 license = "MIT"
 readme = "README.md"
@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = "0.15.1"
-bzip2="0.4"
+petgraph = "0.6.4"
 
 [features]
 py = ["pyo3/extension-module"]
