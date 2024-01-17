@@ -7,6 +7,7 @@ use std::{
 };
 
 use petgraph::{
+    algo::{all_simple_paths, astar},
     graph::{DiGraph, NodeIndex},
     visit::EdgeRef,
 };
@@ -35,6 +36,9 @@ pub enum TopologyError {
     ParseAsnError(std::num::ParseIntError),
     ParseError(String),
 }
+
+pub type TopologyPath = Vec<u32>;
+type TopologyPathIndex = Vec<NodeIndex>;
 
 impl Topology {
     pub fn from_edges(edges: Vec<(u32, u32, RelType)>) -> Self {
@@ -300,6 +304,93 @@ impl Topology {
         // assert!(!is_cyclic_directed(&graph));
         Topology { graph }
     }
+
+    pub fn shortest_path_to(&self, source: u32, target: u32) -> Option<TopologyPath> {
+        let source_index = self.index_of(source)?;
+        let target_index = self.index_of(target)?;
+
+        // Use A* to find the shortest path between two nodes
+        let (_len, path) = astar(
+            &self.graph,
+            source_index,
+            |finish| finish == target_index,
+            |edge| match edge.weight() {
+                // priorize pearing
+                RelType::PearToPear => 0,
+                RelType::ProviderToCustomer => 1,
+                RelType::CustomerToProvider => 2,
+            },
+            |_| 0,
+        )
+        .unwrap();
+
+        let path = path.iter().map(|node| self.asn_of(*node)).collect();
+
+        Some(path)
+    }
+
+    pub fn all_paths_to(
+        &self,
+        source: u32,
+        target: u32,
+    ) -> Option<impl Iterator<Item = TopologyPath> + '_> {
+        let source_index = self.index_of(source)?;
+        let target_index = self.index_of(target)?;
+
+        let paths = all_simple_paths::<TopologyPathIndex, _>(
+            &self.graph,
+            source_index,
+            target_index,
+            0,
+            None,
+        );
+
+        println!("Paths from UT to USP:");
+        let paths = paths.map(move |path| {
+            path.iter()
+                .map(|node| self.asn_of(*node))
+                .collect::<Vec<u32>>()
+        });
+
+        Some(paths)
+    }
+
+    pub fn path_to_all_ases(&self, source: u32) -> Option<Vec<TopologyPath>> {
+        let source_index = self.index_of(source)?;
+
+        let mut stack: Vec<(NodeIndex, TopologyPathIndex)> =
+            vec![(source_index, vec![source_index])];
+        let mut visited: Vec<NodeIndex> = vec![];
+        let mut all_paths: Vec<TopologyPathIndex> = vec![];
+
+        while !stack.is_empty() {
+            let (node_idx, path) = stack.pop().unwrap();
+
+            if visited.contains(&node_idx) {
+                continue;
+            }
+
+            visited.push(node_idx);
+            all_paths.push(path.clone());
+
+            let childrens = self
+                .graph
+                .neighbors_directed(node_idx, petgraph::Direction::Outgoing)
+                .map(|child_idx| {
+                    let mut path = path.clone();
+                    path.push(child_idx);
+                    (child_idx, path)
+                });
+            stack.extend(childrens);
+        }
+
+        let all_paths = all_paths
+            .into_iter()
+            .map(|path| path.iter().map(|node| self.asn_of(*node)).collect())
+            .collect();
+
+        Some(all_paths)
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +471,12 @@ mod test {
         assert!(topo.is_ok());
     }
 
+    fn has_edge(topo: &Topology, asn1: u32, asn2: u32) -> bool {
+        topo.graph
+            .find_edge(topo.index_of(asn1).unwrap(), topo.index_of(asn2).unwrap())
+            .is_some()
+    }
+
     #[test]
     /* Input:
      *               ┌─────┐
@@ -421,11 +518,7 @@ mod test {
 
         let topo = topo.paths_graph(4);
 
-        let has_edge = |asn1: u32, asn2: u32| {
-            topo.graph
-                .find_edge(topo.index_of(asn1).unwrap(), topo.index_of(asn2).unwrap())
-                .is_some()
-        };
+        let has_edge = |asn1: u32, asn2: u32| has_edge(&topo, asn1, asn2);
 
         assert!(has_edge(4, 2));
 
@@ -440,5 +533,63 @@ mod test {
 
         assert_eq!(topo.graph.edge_count(), 7);
         assert!(!is_cyclic_directed(&topo.graph));
+    }
+
+    #[test]
+    fn test_path_graph_with_ciclic() {
+        let topo = diamond_topology();
+        let topo = topo.paths_graph(4);
+
+        let has_edge = |asn1: u32, asn2: u32| has_edge(&topo, asn1, asn2);
+
+        assert!(!is_cyclic_directed(&topo.graph));
+        assert!(has_edge(4, 2));
+        assert!(has_edge(4, 3));
+
+        if has_edge(2, 3) {
+            assert!(!has_edge(3, 2));
+            assert!(has_edge(2, 1));
+            assert!(has_edge(1, 3));
+        } else if has_edge(3, 2) {
+            assert!(!has_edge(2, 3));
+            assert!(has_edge(3, 1));
+            assert!(has_edge(1, 2));
+        } else {
+            panic!("should have edge between 2 and 3");
+        }
+    }
+
+    #[test]
+    fn test_shortest_path_to() {
+        let topo = diamond_topology();
+        let topo = topo.paths_graph(4);
+
+        let path = topo.shortest_path_to(4, 3).unwrap();
+        assert_eq!(path, vec![4, 3]);
+    }
+
+    #[test]
+    fn test_all_paths_to() {
+        let topo = diamond_topology();
+        let topo = topo.paths_graph(4);
+
+        let paths = topo.all_paths_to(4, 3).unwrap().collect::<Vec<_>>();
+
+        assert!(paths.contains(&[4, 3].into()));
+        assert!(paths.contains(&[4, 2, 3].into()));
+        assert!(paths.contains(&[4, 2, 1, 3].into()));
+        assert_eq!(paths.len(), 3);
+    }
+
+    #[test]
+    fn test_path_to_all_ases() {
+        let topo = diamond_topology();
+        let paths = topo.path_to_all_ases(4).unwrap();
+
+        assert!(paths.contains(&[4].into()));
+        assert!(paths.contains(&[4, 2].into()));
+        assert!(paths.contains(&[4, 2, 1].into()));
+        assert!(paths.contains(&[4, 3].into()));
+        assert_eq!(paths.len(), 4);
     }
 }
