@@ -1,5 +1,10 @@
 # Valley Free Explorer
 
+[![Rust](https://github.com/bgpkit/vallye-free/actions/workflows/build.yml/badge.svg)](https://github.com/bgpkit/valley-free/actions/workflows/build.yml)
+[![Crates.io](https://img.shields.io/crates/v/valley-free)](https://crates.io/crates/valley-free)
+[![Docs.rs](https://docs.rs/valley-free/badge.svg)](https://docs.rs/valley-free)
+[![License](https://img.shields.io/crates/l/valley-free)](https://raw.githubusercontent.com/bgpkit/valley-free/main/LICENSE)
+
 `valley-free` crate is a Rust package that reads CAIDA's [AS-relationship data][asrel]
 and explores AS-level paths using `valley-free` model.
 
