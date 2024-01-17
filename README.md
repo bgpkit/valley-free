@@ -80,28 +80,3 @@ on the root directory.
 The examples are available in the [`examples/`](examples/) direction.
 
 You can run it with `cargo run --example=<filename without .rs>`.
-
-### Python
-
-The package is available on PyPi at https://pypi.org/project/valley-free/. 
-For installation, `pip3 install valley-free` should do the trick.
-
-``` python
-#!/usr/bin/env python3
-
-import valley_free
-
-topo = valley_free.load_topology("20161101.as-rel.txt.bz2")
-paths = valley_free.propagate_paths(topo, 15169)
-
-print(len(paths))
-# 117074
-```
-
-#### Manually build Python package 
-
-Build for current Python environment:
-`maturin build --release --features py`
-
-Build using manylinux environment:
-`docker run --rm -v $(pwd):/io konstin2/maturin build --release --features py`

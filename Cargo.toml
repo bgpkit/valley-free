@@ -12,14 +12,5 @@ readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-name = "valley_free"
-crate-type = ["cdylib", "rlib"]
-
 [dependencies]
-pyo3 = "0.15.1"
 petgraph = "0.6.4"
-
-[features]
-py = ["pyo3/extension-module"]
-default = []
