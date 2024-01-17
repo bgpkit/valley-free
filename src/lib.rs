@@ -439,6 +439,6 @@ mod test {
         assert!(has_edge(3, 6));
 
         assert_eq!(topo.graph.edge_count(), 7);
-        assert!(!is_cyclic_directed(topo.graph));
+        assert!(!is_cyclic_directed(&topo.graph));
     }
 }

@@ -12,7 +12,7 @@ fn main() {
     let ut_path = topo.paths_graph(university_of_twente_asn);
 
     let paths = all_simple_paths::<Vec<_>, _>(
-        ut_path.graph,
+        &ut_path.graph,
         ut_path.index_of(university_of_twente_asn).unwrap(),
         ut_path.index_of(universidade_de_sao_paulo_asn).unwrap(),
         0,
