@@ -186,8 +186,13 @@ impl Topology {
     }
 
     fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
-        self.graph
-            .find_edge(self.index_of(asn1).unwrap(), self.index_of(asn2).unwrap())
+        self.index_of(asn1)
+            .map(|asn1| {
+                self.index_of(asn2)
+                    .map(|asn2| self.graph.find_edge(asn1, asn2))
+            })
+            .flatten()
+            .flatten()
             .is_some()
     }
 
@@ -229,9 +234,16 @@ impl Topology {
             graph: DiGraph::new(),
         };
 
-        self.all_asns().into_iter().for_each(|asn| {
-            topo.graph.add_node(asn);
-        });
+        let get_or_create = |topo: &mut Topology, asn: u32| {
+            topo.index_of(asn)
+                .unwrap_or_else(|| topo.graph.add_node(asn))
+        };
+
+        let add_edge = |topo: &mut Topology, asn1: u32, asn2: u32, rel: RelType| {
+            let asn1 = get_or_create(topo, asn1);
+            let asn2 = get_or_create(topo, asn2);
+            topo.graph.add_edge(asn1, asn2, rel);
+        };
 
         let mut up_path_queue = Vec::new();
         let mut up_seen = Vec::new();
@@ -249,11 +261,7 @@ impl Topology {
                 }
                 up_path_queue.push(provider_asn);
 
-                topo.graph.add_edge(
-                    topo.index_of(asn).unwrap(),
-                    topo.index_of(provider_asn).unwrap(),
-                    RelType::CustomerToProvider,
-                );
+                add_edge(&mut topo, asn, provider_asn, RelType::CustomerToProvider);
             }
         }
 
@@ -266,11 +274,7 @@ impl Topology {
                 peer_seen.push(peer_asn);
 
                 if !topo.has_connection(peer_asn, asn) {
-                    topo.graph.add_edge(
-                        topo.index_of(asn).unwrap(),
-                        topo.index_of(peer_asn).unwrap(),
-                        RelType::PearToPear,
-                    );
+                    add_edge(&mut topo, asn, peer_asn, RelType::PearToPear);
                 }
             }
         }
@@ -290,11 +294,7 @@ impl Topology {
                 if !topo.has_connection(customer_asn, asn)
                     && !topo.has_connection(asn, customer_asn)
                 {
-                    topo.graph.add_edge(
-                        topo.index_of(asn).unwrap(),
-                        topo.index_of(customer_asn).unwrap(),
-                        RelType::ProviderToCustomer,
-                    );
+                    add_edge(&mut topo, asn, customer_asn, RelType::ProviderToCustomer);
                 }
 
                 if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
