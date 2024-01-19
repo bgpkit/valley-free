@@ -14,3 +14,8 @@ readme = "README.md"
 
 [dependencies]
 petgraph = "0.6.4"
+
+[dev-dependencies]
+rayon = "1.8.1"
+bzip2 = "0.4.4"
+reqwest = { version = "0.11", features = ["blocking"] }
