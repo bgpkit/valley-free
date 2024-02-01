@@ -15,7 +15,7 @@ fn main() {
     println!("Basic topology");
     println!("{:?}", Dot::new(&topo.graph));
 
-    let topo_path = topo.paths_graph(4);
+    let topo_path = topo.valley_free_of(4);
     println!("Path topology");
     println!("{:?}", Dot::new(&topo_path.graph));
 
