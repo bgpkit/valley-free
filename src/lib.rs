@@ -7,8 +7,10 @@ use std::{
 };
 
 use petgraph::{
+    algo::{all_simple_paths, astar},
     graph::{DiGraph, NodeIndex},
     visit::EdgeRef,
+    Direction,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
@@ -25,15 +27,290 @@ impl Default for RelType {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Topology {
     pub graph: DiGraph<u32, RelType>,
 }
+
+#[derive(Debug, Clone)]
+pub struct ValleyFreeTopology {
+    pub graph: DiGraph<u32, RelType>,
+    pub source: u32,
+}
+
+pub type TopologyPath = Vec<u32>;
+type TopologyPathIndex = Vec<NodeIndex>;
 
 #[derive(Debug)]
 pub enum TopologyError {
     IoError(io::Error),
     ParseAsnError(std::num::ParseIntError),
     ParseError(String),
+}
+
+pub trait TopologyExt {
+    fn asn_of(&self, index: NodeIndex) -> u32;
+    fn index_of(&self, asn: u32) -> Option<NodeIndex>;
+    fn all_asns(&self) -> HashSet<u32>;
+    fn providers_of(&self, asn: u32) -> Option<HashSet<u32>>;
+    fn customers_of(&self, asn: u32) -> Option<HashSet<u32>>;
+    fn peers_of(&self, asn: u32) -> Option<HashSet<u32>>;
+    fn has_connection(&self, asn1: u32, asn2: u32) -> bool;
+}
+
+trait TopologyPathExt {
+    fn paths_graph(&self, asn: u32) -> DiGraph<u32, RelType>;
+}
+
+impl TopologyExt for DiGraph<u32, RelType> {
+    fn asn_of(&self, index: NodeIndex) -> u32 {
+        *self.node_weight(index).unwrap()
+    }
+
+    fn index_of(&self, asn: u32) -> Option<NodeIndex> {
+        self.node_indices().find(|&index| self.asn_of(index) == asn)
+    }
+
+    fn all_asns(&self) -> HashSet<u32> {
+        self.raw_nodes().iter().map(|node| node.weight).collect()
+    }
+
+    fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let incoming = self
+            .edges_directed(self.index_of(asn)?, Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .map(|edge| edge.source());
+
+        let outgoing = self
+            .edges_directed(self.index_of(asn)?, Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
+            .map(|edge| edge.target());
+
+        Some(
+            incoming
+                .chain(outgoing)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let outgoing = self
+            .edges_directed(self.index_of(asn)?, Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .map(|edge| edge.target());
+
+        let incoming = self
+            .edges_directed(self.index_of(asn)?, Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
+            .map(|edge| edge.source());
+
+        Some(
+            outgoing
+                .chain(incoming)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        let outgoing = self
+            .edges_directed(self.index_of(asn)?, Direction::Outgoing)
+            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .map(|edge| edge.target());
+
+        let incoming = self
+            .edges_directed(self.index_of(asn)?, Direction::Incoming)
+            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .map(|edge| edge.source());
+
+        Some(
+            outgoing
+                .chain(incoming)
+                .map(|asn| self.asn_of(asn))
+                .collect(),
+        )
+    }
+
+    fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
+        self.index_of(asn1)
+            .map(|asn1| self.index_of(asn2).map(|asn2| self.find_edge(asn1, asn2)))
+            .flatten()
+            .flatten()
+            .is_some()
+    }
+}
+
+impl TopologyPathExt for DiGraph<u32, RelType> {
+    /*
+     * Given the following topology:
+     *
+     *               ┌─────┐
+     *               │     │
+     *               └──┬──┘
+     *           ┌──────┴─────┐
+     *        ┌──▼──┐      ┌──▼──┐
+     *        │     ◄──────►     │
+     *        └──┬──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──▼──┐     ┌─▼──▼┐     ┌──▼──┐
+     *  │     │     │     │     │     │
+     *  └─────┘     └─────┘     └─────┘
+     *
+     *  This method generate a DAG with all paths from the given AS to all other AS-relationship
+     *  following the valley-free principle.
+     *
+     *              ┌─────┐
+     *              │     │
+     *              └──▲──┘
+     *          ┌──────┴─────┐
+     *       ┌──┴──┐      ┌──▼──┐
+     *       │     ├──────►     │
+     *       └──▲──┘      └──┬──┘
+     *    ┌─────┴────┐  ┌────┴────┐
+     * ┌──┴──┐     ┌─▼──▼┐     ┌──▼──┐
+     * │     │     │     │     │     │
+     * └─────┘     └─────┘     └─────┘
+     *
+     * You can use this graph to calculate the shortest path or even list all paths using the
+     * petgraph library.
+     */
+    fn paths_graph(&self, asn: u32) -> DiGraph<u32, RelType> {
+        let mut graph = DiGraph::new();
+
+        let get_or_create = |graph: &mut DiGraph<u32, RelType>, asn: u32| {
+            graph.index_of(asn).unwrap_or_else(|| graph.add_node(asn))
+        };
+
+        let add_edge = |graph: &mut DiGraph<u32, RelType>, asn1: u32, asn2: u32, rel: RelType| {
+            let asn1 = get_or_create(graph, asn1);
+            let asn2 = get_or_create(graph, asn2);
+            graph.add_edge(asn1, asn2, rel);
+        };
+
+        let mut up_path_queue = Vec::new();
+        let mut up_seen = Vec::new();
+
+        // add first
+        graph.add_node(asn);
+        up_path_queue.push(asn);
+
+        while !up_path_queue.is_empty() {
+            let asn = up_path_queue.pop().unwrap(); // While check if has elements
+            up_seen.push(asn);
+
+            for provider_asn in self.providers_of(asn).unwrap() {
+                if up_seen.contains(&provider_asn) {
+                    continue;
+                }
+                up_path_queue.push(provider_asn);
+
+                add_edge(&mut graph, asn, provider_asn, RelType::CustomerToProvider);
+            }
+        }
+
+        let mut peer_seen = Vec::new();
+        // Iterate over all ASes reach by UP
+        // They can only do one PEAR, so we don't need a queue
+        // In order to avoid cycle, we need to first iterate with was first acess by UP
+        for asn in up_seen.clone().into_iter() {
+            for peer_asn in self.peers_of(asn).unwrap() {
+                peer_seen.push(peer_asn);
+
+                if !graph.has_connection(peer_asn, asn) {
+                    add_edge(&mut graph, asn, peer_asn, RelType::PearToPear);
+                }
+            }
+        }
+
+        let mut down_seen = Vec::new();
+
+        let mut down_path_queue: Vec<_> = up_seen
+            .into_iter()
+            .chain(peer_seen.into_iter())
+            .rev() // down propagate fisrt up then peer
+            .collect();
+
+        while !down_path_queue.is_empty() {
+            let asn = down_path_queue.pop().unwrap();
+
+            for customer_asn in self.customers_of(asn).unwrap() {
+                if !graph.has_connection(customer_asn, asn)
+                    && !graph.has_connection(asn, customer_asn)
+                {
+                    add_edge(&mut graph, asn, customer_asn, RelType::ProviderToCustomer);
+                }
+
+                if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
+                    down_seen.push(customer_asn);
+                    down_path_queue.push(customer_asn);
+                }
+            }
+        }
+
+        // assert!(!is_cyclic_directed(&graph));
+        graph
+    }
+}
+
+impl TopologyExt for Topology {
+    fn asn_of(&self, index: NodeIndex) -> u32 {
+        self.graph.asn_of(index)
+    }
+
+    fn index_of(&self, asn: u32) -> Option<NodeIndex> {
+        self.graph.index_of(asn)
+    }
+
+    fn all_asns(&self) -> HashSet<u32> {
+        self.graph.all_asns()
+    }
+
+    fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.providers_of(asn)
+    }
+
+    fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.customers_of(asn)
+    }
+
+    fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.peers_of(asn)
+    }
+
+    fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
+        self.graph.has_connection(asn1, asn2)
+    }
+}
+
+impl TopologyExt for ValleyFreeTopology {
+    fn asn_of(&self, index: NodeIndex) -> u32 {
+        self.graph.asn_of(index)
+    }
+
+    fn index_of(&self, asn: u32) -> Option<NodeIndex> {
+        self.graph.index_of(asn)
+    }
+
+    fn all_asns(&self) -> HashSet<u32> {
+        self.graph.all_asns()
+    }
+
+    fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.providers_of(asn)
+    }
+
+    fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.customers_of(asn)
+    }
+
+    fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
+        self.graph.peers_of(asn)
+    }
+
+    fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
+        self.graph.has_connection(asn1, asn2)
+    }
 }
 
 impl Topology {
@@ -104,209 +381,103 @@ impl Topology {
         Ok(Topology::from_edges(edges))
     }
 
-    pub fn asn_of(&self, index: NodeIndex) -> u32 {
-        *self.graph.node_weight(index).unwrap()
+    pub fn valley_free_of(&self, asn: u32) -> ValleyFreeTopology {
+        ValleyFreeTopology {
+            graph: self.graph.paths_graph(asn),
+            source: asn,
+        }
     }
+}
 
-    pub fn index_of(&self, asn: u32) -> Option<NodeIndex> {
-        self.graph
-            .node_indices()
-            .find(|&index| self.asn_of(index) == asn)
-    }
+impl ValleyFreeTopology {
+    pub fn shortest_path_to(&self, target: u32) -> Option<TopologyPath> {
+        let source_index = self.index_of(self.source)?;
+        let target_index = self.index_of(target)?;
 
-    pub fn all_asns(&self) -> HashSet<u32> {
-        self.graph
-            .raw_nodes()
-            .iter()
-            .map(|node| node.weight)
-            .collect()
-    }
-
-    pub fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
-        let incoming = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
-            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
-            .map(|edge| edge.source());
-
-        let outgoing = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
-            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
-            .map(|edge| edge.target());
-
-        Some(
-            incoming
-                .chain(outgoing)
-                .map(|asn| self.asn_of(asn))
-                .collect(),
+        // Use A* to find the shortest path between two nodes
+        let (_len, path) = astar(
+            &self.graph,
+            source_index,
+            |finish| finish == target_index,
+            |edge| match edge.weight() {
+                // priorize pearing
+                RelType::PearToPear => 0,
+                RelType::ProviderToCustomer => 1,
+                RelType::CustomerToProvider => 2,
+            },
+            |_| 0,
         )
+        .unwrap();
+
+        let path = path.iter().map(|node| self.asn_of(*node)).collect();
+
+        Some(path)
     }
 
-    pub fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
-        let outgoing = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
-            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
-            .map(|edge| edge.target());
+    pub fn all_paths_to(&self, target: u32) -> Option<impl Iterator<Item = TopologyPath> + '_> {
+        let source_index = self.index_of(self.source)?;
+        let target_index = self.index_of(target)?;
 
-        let incoming = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
-            .filter(|edge| edge.weight() == &RelType::CustomerToProvider)
-            .map(|edge| edge.source());
+        let paths = all_simple_paths::<TopologyPathIndex, _>(
+            &self.graph,
+            source_index,
+            target_index,
+            0,
+            None,
+        );
 
-        Some(
-            outgoing
-                .chain(incoming)
-                .map(|asn| self.asn_of(asn))
-                .collect(),
-        )
+        let paths = paths.map(move |path| {
+            path.iter()
+                .map(|node| self.asn_of(*node))
+                .collect::<Vec<u32>>()
+        });
+
+        Some(paths)
     }
 
-    pub fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
-        let outgoing = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Outgoing)
-            .filter(|edge| edge.weight() == &RelType::PearToPear)
-            .map(|edge| edge.target());
+    pub fn path_to_all_ases(&self) -> Option<Vec<TopologyPath>> {
+        let source_index = self.index_of(self.source)?;
 
-        let incoming = self
-            .graph
-            .edges_directed(self.index_of(asn)?, petgraph::Direction::Incoming)
-            .filter(|edge| edge.weight() == &RelType::PearToPear)
-            .map(|edge| edge.source());
+        let mut stack: Vec<(NodeIndex, TopologyPathIndex)> =
+            vec![(source_index, vec![source_index])];
+        let mut visited: Vec<NodeIndex> = vec![];
+        let mut all_paths: Vec<TopologyPathIndex> = vec![];
 
-        Some(
-            outgoing
-                .chain(incoming)
-                .map(|asn| self.asn_of(asn))
-                .collect(),
-        )
-    }
+        while !stack.is_empty() {
+            let (node_idx, path) = stack.pop().unwrap();
 
-    fn has_connection(&self, asn1: u32, asn2: u32) -> bool {
-        self.index_of(asn1)
-            .map(|asn1| {
-                self.index_of(asn2)
-                    .map(|asn2| self.graph.find_edge(asn1, asn2))
-            })
-            .flatten()
-            .flatten()
-            .is_some()
-    }
-
-    /*
-     * Given the following topology:
-     *
-     *               ┌─────┐
-     *               │     │
-     *               └──┬──┘
-     *           ┌──────┴─────┐
-     *        ┌──▼──┐      ┌──▼──┐
-     *        │     ◄──────►     │
-     *        └──┬──┘      └──┬──┘
-     *     ┌─────┴────┐  ┌────┴────┐
-     *  ┌──▼──┐     ┌─▼──▼┐     ┌──▼──┐
-     *  │     │     │     │     │     │
-     *  └─────┘     └─────┘     └─────┘
-     *
-     *  This method generate a DAG with all paths from the given AS to all other AS-relationship
-     *  following the valley-free principle.
-     *
-     *              ┌─────┐
-     *              │     │
-     *              └──▲──┘
-     *          ┌──────┴─────┐
-     *       ┌──┴──┐      ┌──▼──┐
-     *       │     ├──────►     │
-     *       └──▲──┘      └──┬──┘
-     *    ┌─────┴────┐  ┌────┴────┐
-     * ┌──┴──┐     ┌─▼──▼┐     ┌──▼──┐
-     * │     │     │     │     │     │
-     * └─────┘     └─────┘     └─────┘
-     *
-     * You can use this graph to calculate the shortest path or even list all paths using the
-     * petgraph library.
-     */
-    pub fn paths_graph(&self, asn: u32) -> Topology {
-        let mut topo = Topology {
-            graph: DiGraph::new(),
-        };
-
-        let get_or_create = |topo: &mut Topology, asn: u32| {
-            topo.index_of(asn)
-                .unwrap_or_else(|| topo.graph.add_node(asn))
-        };
-
-        let add_edge = |topo: &mut Topology, asn1: u32, asn2: u32, rel: RelType| {
-            let asn1 = get_or_create(topo, asn1);
-            let asn2 = get_or_create(topo, asn2);
-            topo.graph.add_edge(asn1, asn2, rel);
-        };
-
-        let mut up_path_queue = Vec::new();
-        let mut up_seen = Vec::new();
-
-        // add first
-        topo.graph.add_node(asn);
-        up_path_queue.push(asn);
-
-        while !up_path_queue.is_empty() {
-            let asn = up_path_queue.pop().unwrap(); // While check if has elements
-            up_seen.push(asn);
-
-            for provider_asn in self.providers_of(asn).unwrap() {
-                if up_seen.contains(&provider_asn) {
-                    continue;
-                }
-                up_path_queue.push(provider_asn);
-
-                add_edge(&mut topo, asn, provider_asn, RelType::CustomerToProvider);
+            if visited.contains(&node_idx) {
+                continue;
             }
+
+            visited.push(node_idx);
+            all_paths.push(path.clone());
+
+            let childrens = self
+                .graph
+                .neighbors_directed(node_idx, petgraph::Direction::Outgoing)
+                .map(|child_idx| {
+                    let mut path = path.clone();
+                    path.push(child_idx);
+                    (child_idx, path)
+                });
+            stack.extend(childrens);
         }
 
-        let mut peer_seen = Vec::new();
-        // Iterate over all ASes reach by UP
-        // They can only do one PEAR, so we don't need a queue
-        // In order to avoid cycle, we need to first iterate with was first acess by UP
-        for asn in up_seen.clone().into_iter() {
-            for peer_asn in self.peers_of(asn).unwrap() {
-                peer_seen.push(peer_asn);
-
-                if !topo.has_connection(peer_asn, asn) {
-                    add_edge(&mut topo, asn, peer_asn, RelType::PearToPear);
-                }
-            }
-        }
-
-        let mut down_seen = Vec::new();
-
-        let mut down_path_queue: Vec<_> = up_seen
+        let all_paths = all_paths
             .into_iter()
-            .chain(peer_seen.into_iter())
-            .rev() // down propagate fisrt up then peer
+            .map(|path| path.iter().map(|node| self.asn_of(*node)).collect())
             .collect();
 
-        while !down_path_queue.is_empty() {
-            let asn = down_path_queue.pop().unwrap();
+        Some(all_paths)
+    }
+}
 
-            for customer_asn in self.customers_of(asn).unwrap() {
-                if !topo.has_connection(customer_asn, asn)
-                    && !topo.has_connection(asn, customer_asn)
-                {
-                    add_edge(&mut topo, asn, customer_asn, RelType::ProviderToCustomer);
-                }
-
-                if !down_seen.contains(&customer_asn) && !down_path_queue.contains(&customer_asn) {
-                    down_seen.push(customer_asn);
-                    down_path_queue.push(customer_asn);
-                }
-            }
+impl From<ValleyFreeTopology> for Topology {
+    fn from(valley_free: ValleyFreeTopology) -> Self {
+        Topology {
+            graph: valley_free.graph,
         }
-
-        // assert!(!is_cyclic_directed(&graph));
-        topo
     }
 }
 
@@ -339,6 +510,29 @@ mod test {
             (3, 2, RelType::PearToPear),
             (3, 4, RelType::ProviderToCustomer),
             (2, 4, RelType::ProviderToCustomer),
+        ])
+    }
+
+    /*               ┌─────┐
+     *               │  1  │
+     *               └──┬──┘
+     *           ┌──────┴─────┐
+     *        ┌──▼──┐      ┌──▼──┐
+     *        │  2  │      │  3  │
+     *        └──┬──┘      └──┬──┘
+     *     ┌─────┴────┐  ┌────┴────┐
+     *  ┌──▼──┐     ┌─▼──▼─┐    ┌──▼──┐
+     *  │  4  │     │  05  │    │  6  │
+     *  └─────┘     └──────┘    └─────┘
+     */
+    fn piramid_topology() -> Topology {
+        Topology::from_edges(vec![
+            (1, 2, RelType::ProviderToCustomer),
+            (1, 3, RelType::ProviderToCustomer),
+            (2, 4, RelType::ProviderToCustomer),
+            (2, 5, RelType::ProviderToCustomer),
+            (3, 5, RelType::ProviderToCustomer),
+            (3, 6, RelType::ProviderToCustomer),
         ])
     }
 
@@ -453,7 +647,7 @@ mod test {
             (3, 6, RelType::ProviderToCustomer),
         ]);
 
-        let topo = topo.paths_graph(4);
+        let topo = topo.valley_free_of(4);
 
         let has_edge = |asn1: u32, asn2: u32| topo.has_connection(asn1, asn2);
 
@@ -473,6 +667,42 @@ mod test {
     }
 
     #[test]
+    fn test_shortest_path_to() {
+        let topo = piramid_topology();
+        let topo = topo.valley_free_of(4);
+
+        let path = topo.shortest_path_to(6).unwrap();
+        assert_eq!(path, vec![4, 2, 1, 3, 6]);
+    }
+
+    #[test]
+    fn test_all_paths_to() {
+        let topo = piramid_topology();
+        let topo = topo.valley_free_of(4);
+
+        let paths = topo.all_paths_to(5).unwrap().collect::<Vec<_>>();
+
+        assert!(paths.contains(&[4, 2, 5].into()));
+        assert!(paths.contains(&[4, 2, 1, 3, 5].into()));
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn test_path_to_all_ases() {
+        let topo = piramid_topology();
+        let topo = topo.valley_free_of(4);
+
+        let paths = topo.path_to_all_ases().unwrap();
+
+        assert!(paths.contains(&[4].into()));
+        assert!(paths.contains(&[4, 2].into()));
+        assert!(paths.contains(&[4, 2, 5].into()) || paths.contains(&[4, 2, 1, 3, 5].into()));
+        assert!(paths.contains(&[4, 2, 1].into()));
+        assert!(paths.contains(&[4, 2, 1, 3].into()));
+        assert!(paths.contains(&[4, 2, 1, 3, 6].into()));
+        assert_eq!(paths.len(), 6);
+    }
+
     /* One possible expected output
      *       ┌───────┐
      *       │   1   │
@@ -486,9 +716,10 @@ mod test {
      *       │   4   │
      *       └───────┘
      */
+    #[test]
     fn test_path_graph_with_ciclic() {
         let topo = diamond_topology();
-        let topo = topo.paths_graph(4);
+        let topo = topo.valley_free_of(4);
 
         let has_edge = |asn1: u32, asn2: u32| topo.has_connection(asn1, asn2);
 
@@ -517,7 +748,7 @@ mod test {
         let topo = Topology::from_caida(get_caida_data()).unwrap();
 
         topo.all_asns().into_par_iter().for_each(|asn| {
-            let topo = topo.paths_graph(asn);
+            let topo = topo.valley_free_of(asn);
             assert!(!is_cyclic_directed(&topo.graph));
         });
     }
