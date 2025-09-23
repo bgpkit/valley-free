@@ -16,7 +16,7 @@ use petgraph::{
 #[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 pub enum RelType {
     CustomerToProvider,
-    PearToPear,
+    PeerToPeer,
     ProviderToCustomer,
 }
 
@@ -78,7 +78,7 @@ impl TopologyExt for DiGraph<u32, RelType> {
     fn providers_of(&self, asn: u32) -> Option<HashSet<u32>> {
         let incoming = self
             .edges_directed(self.index_of(asn)?, Direction::Incoming)
-            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PeerToPeer
             .map(|edge| edge.source());
 
         let outgoing = self
@@ -97,7 +97,7 @@ impl TopologyExt for DiGraph<u32, RelType> {
     fn customers_of(&self, asn: u32) -> Option<HashSet<u32>> {
         let outgoing = self
             .edges_directed(self.index_of(asn)?, Direction::Outgoing)
-            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PearToPear
+            .filter(|edge| edge.weight() == &RelType::ProviderToCustomer) // could be PeerToPeer
             .map(|edge| edge.target());
 
         let incoming = self
@@ -116,12 +116,12 @@ impl TopologyExt for DiGraph<u32, RelType> {
     fn peers_of(&self, asn: u32) -> Option<HashSet<u32>> {
         let outgoing = self
             .edges_directed(self.index_of(asn)?, Direction::Outgoing)
-            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .filter(|edge| edge.weight() == &RelType::PeerToPeer)
             .map(|edge| edge.target());
 
         let incoming = self
             .edges_directed(self.index_of(asn)?, Direction::Incoming)
-            .filter(|edge| edge.weight() == &RelType::PearToPear)
+            .filter(|edge| edge.weight() == &RelType::PeerToPeer)
             .map(|edge| edge.source());
 
         Some(
@@ -218,7 +218,7 @@ impl TopologyPathExt for DiGraph<u32, RelType> {
                 peer_seen.push(peer_asn);
 
                 if !graph.has_connection(peer_asn, asn) {
-                    add_edge(&mut graph, asn, peer_asn, RelType::PearToPear);
+                    add_edge(&mut graph, asn, peer_asn, RelType::PeerToPeer);
                 }
             }
         }
@@ -365,7 +365,7 @@ impl Topology {
 
                 match rel {
                     // asn1 and asn2 are peers
-                    0 => Ok((asn1, asn2, RelType::PearToPear)),
+                    0 => Ok((asn1, asn2, RelType::PeerToPeer)),
 
                     // asn1 is a provider of asn2
                     -1 => Ok((asn1, asn2, RelType::ProviderToCustomer)),
@@ -401,7 +401,7 @@ impl ValleyFreeTopology {
             |finish| finish == target_index,
             |edge| match edge.weight() {
                 // priorize pearing
-                RelType::PearToPear => 0,
+                RelType::PeerToPeer => 0,
                 RelType::ProviderToCustomer => 1,
                 RelType::CustomerToProvider => 2,
             },
@@ -507,7 +507,7 @@ mod test {
         Topology::from_edges(vec![
             (1, 2, RelType::ProviderToCustomer),
             (1, 3, RelType::ProviderToCustomer),
-            (3, 2, RelType::PearToPear),
+            (3, 2, RelType::PeerToPeer),
             (3, 4, RelType::ProviderToCustomer),
             (2, 4, RelType::ProviderToCustomer),
         ])
@@ -642,7 +642,7 @@ mod test {
             (1, 3, RelType::ProviderToCustomer),
             (2, 4, RelType::ProviderToCustomer),
             (2, 5, RelType::ProviderToCustomer),
-            (2, 3, RelType::PearToPear),
+            (2, 3, RelType::PeerToPeer),
             (3, 5, RelType::ProviderToCustomer),
             (3, 6, RelType::ProviderToCustomer),
         ]);
