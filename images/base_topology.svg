@@ -50,7 +50,7 @@
 <title>1-&gt;5</title>
 <path fill="none" stroke="#000000" d="M205.183,-177.3012C204.2125,-166.8016 204.3881,-153.6016 208.9729,-142.8 211.3722,-137.1474 215.1258,-131.9207 219.3265,-127.3025"/>
 <polygon fill="#000000" stroke="#000000" points="221.9526,-129.6299 226.6579,-120.1372 217.0599,-124.6238 221.9526,-129.6299"/>
-<text text-anchor="middle" x="240.919" y="-147" font-family="Times,serif" font-size="14.00" fill="#000000">PearToPear</text>
+<text text-anchor="middle" x="240.919" y="-147" font-family="Times,serif" font-size="14.00" fill="#000000">PeerToPeer</text>
 </g>
 <!-- 3 -->
 <g id="node4" class="node">
@@ -97,7 +97,7 @@
 <title>5-&gt;1</title>
 <path fill="none" stroke="#000000" d="M261.9108,-121.2889C272.0993,-131.9811 281.8511,-146.8298 274.2703,-159.6 267.3308,-171.2899 255.1128,-179.4268 243.0602,-184.9667"/>
 <polygon fill="#000000" stroke="#000000" points="241.4595,-181.8401 233.5338,-188.8711 244.1141,-188.3172 241.4595,-181.8401"/>
-<text text-anchor="middle" x="308.919" y="-147" font-family="Times,serif" font-size="14.00" fill="#000000">PearToPear</text>
+<text text-anchor="middle" x="308.919" y="-147" font-family="Times,serif" font-size="14.00" fill="#000000">PeerToPeer</text>
 </g>
 <!-- 5&#45;&gt;3 -->
 <g id="edge8" class="edge">

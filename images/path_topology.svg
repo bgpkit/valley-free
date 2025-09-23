@@ -37,7 +37,7 @@
 <title>0-&gt;3</title>
 <path fill="none" stroke="#000000" d="M144.0543,-266.2161C145.3874,-244.9276 147.9684,-208.6294 151.7026,-177.6 153.399,-163.5042 155.8265,-147.914 157.9968,-134.9595"/>
 <polygon fill="#000000" stroke="#000000" points="161.5004,-135.2355 159.7377,-124.7883 154.6007,-134.0545 161.5004,-135.2355"/>
-<text text-anchor="middle" x="183.6487" y="-191.4" font-family="Times,serif" font-size="14.00" fill="#000000">PearToPear</text>
+<text text-anchor="middle" x="183.6487" y="-191.4" font-family="Times,serif" font-size="14.00" fill="#000000">PeerToPeer</text>
 </g>
 <!-- 5 -->
 <g id="node6" class="node">

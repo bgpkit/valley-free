@@ -7,7 +7,7 @@ fn main() {
         (1, 3, RelType::ProviderToCustomer),
         (2, 4, RelType::ProviderToCustomer),
         (2, 5, RelType::ProviderToCustomer),
-        (2, 3, RelType::PearToPear),
+        (2, 3, RelType::PeerToPeer),
         (3, 5, RelType::ProviderToCustomer),
         (3, 6, RelType::ProviderToCustomer),
     ]);

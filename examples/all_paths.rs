@@ -4,7 +4,7 @@ fn main() {
     let topo = Topology::from_edges(vec![
         (1, 2, RelType::ProviderToCustomer),
         (1, 3, RelType::ProviderToCustomer),
-        (2, 3, RelType::PearToPear),
+        (2, 3, RelType::PeerToPeer),
         (2, 4, RelType::ProviderToCustomer),
         (3, 4, RelType::ProviderToCustomer),
     ]);
